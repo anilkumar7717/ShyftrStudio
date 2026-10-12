@@ -1,0 +1,27 @@
+{
+  "id": "karaoke-fill-cyan",
+  "name": "Karaoke Fill \u00b7 Cyan",
+  "family": "Karaoke fill",
+  "description": "Text fills with colour as each word is spoken.",
+  "fontFamilies": [
+    "Helvetica Neue",
+    "Avenir Next",
+    "Segoe UI",
+    "Arial",
+    "Inter",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 800,
+  "sizePct": 0.056,
+  "textColor": "#ffffffff",
+  "activeColor": "#ff22d3ee",
+  "outlineColor": "#ff0b1020",
+  "outlineWidthPct": 0.14,
+  "wordEffect": "karaoke",
+  "maxWordsPerLine": 5,
+  "maxCharsPerLine": 30,
+  "maxLines": 2,
+  "entry": "fade",
+  "exit": "fade",
+  "animMs": 150
+}

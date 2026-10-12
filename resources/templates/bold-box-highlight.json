@@ -1,0 +1,32 @@
+{
+  "id": "bold-box-highlight",
+  "name": "Bold Box Highlight",
+  "family": "Bold highlight",
+  "description": "The spoken word sits on a coloured rounded box.",
+  "fontFamilies": [
+    "Arial Black",
+    "Helvetica Neue",
+    "Segoe UI Black",
+    "Impact",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 900,
+  "sizePct": 0.058,
+  "uppercase": true,
+  "textColor": "#ffffffff",
+  "activeColor": "#ffffffff",
+  "outlineColor": "#ff000000",
+  "outlineWidthPct": 0.03,
+  "boxMode": "activeWord",
+  "boxColor": "#ffff3d71",
+  "boxPaddingPct": 0.18,
+  "boxRadiusPct": 0.22,
+  "wordEffect": "highlight",
+  "maxWordsPerLine": 3,
+  "maxCharsPerLine": 18,
+  "maxLines": 2,
+  "entry": "pop",
+  "exit": "none",
+  "animMs": 110,
+  "offsetYPct": 0.06
+}

@@ -1,0 +1,31 @@
+{
+  "id": "neon-glow",
+  "name": "Neon Glow",
+  "family": "Creator",
+  "description": "Glowing magenta outline for gaming and music edits.",
+  "fontFamilies": [
+    "Arial Black",
+    "Helvetica Neue",
+    "Segoe UI Black",
+    "Impact",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 900,
+  "sizePct": 0.06,
+  "uppercase": true,
+  "textColor": "#ffffffff",
+  "activeColor": "#ff00f5ff",
+  "outlineColor": "#ffff2bd6",
+  "outlineWidthPct": 0.08,
+  "glowColor": "#ccff2bd6",
+  "glowRadiusPct": 0.35,
+  "shadowColor": "#00000000",
+  "wordEffect": "highlight",
+  "maxWordsPerLine": 3,
+  "maxCharsPerLine": 18,
+  "maxLines": 2,
+  "entry": "pop",
+  "exit": "fade",
+  "animMs": 120,
+  "offsetYPct": 0.05
+}

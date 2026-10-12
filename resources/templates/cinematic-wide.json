@@ -1,0 +1,32 @@
+{
+  "id": "cinematic-wide",
+  "name": "Cinematic Wide",
+  "family": "Cinematic",
+  "description": "Small uppercase with wide letter spacing, documentary feel.",
+  "fontFamilies": [
+    "Helvetica Neue",
+    "Avenir Next",
+    "Segoe UI",
+    "Arial",
+    "Inter",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 600,
+  "sizePct": 0.034,
+  "uppercase": true,
+  "letterSpacingPct": 22,
+  "textColor": "#ffffffff",
+  "activeColor": "#ffffffff",
+  "outlineColor": "#00000000",
+  "outlineWidthPct": 0,
+  "shadowColor": "#b4000000",
+  "shadowOffsetPct": 0.06,
+  "wordEffect": "none",
+  "maxWordsPerLine": 8,
+  "maxCharsPerLine": 40,
+  "maxLines": 2,
+  "maxWidthPct": 0.7,
+  "entry": "fade",
+  "exit": "fade",
+  "animMs": 450
+}

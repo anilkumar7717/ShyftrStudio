@@ -1,0 +1,13 @@
+function(shyftr_add_test name)
+    add_executable(${name} ${name}.cpp TestUtil.h)
+    target_link_libraries(${name} PRIVATE shyftr_engine Qt6::Test)
+    add_test(NAME ${name} COMMAND ${name})
+    set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 600)
+endfunction()
+
+shyftr_add_test(tst_model)
+shyftr_add_test(tst_timeline)
+shyftr_add_test(tst_project_io)
+shyftr_add_test(tst_captions)
+shyftr_add_test(tst_render_export)
+shyftr_add_test(tst_transcription)

@@ -1,0 +1,31 @@
+{
+  "id": "bold-highlight-yellow",
+  "name": "Bold Highlight \u00b7 Yellow",
+  "family": "Bold highlight",
+  "description": "White heavy captions; the spoken word turns yellow. Shorts / Reels.",
+  "fontFamilies": [
+    "Arial Black",
+    "Helvetica Neue",
+    "Segoe UI Black",
+    "Impact",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 900,
+  "sizePct": 0.062,
+  "uppercase": true,
+  "textColor": "#ffffffff",
+  "activeColor": "#ffffd43b",
+  "outlineColor": "#ff000000",
+  "outlineWidthPct": 0.16,
+  "shadowColor": "#a0000000",
+  "shadowOffsetPct": 0.05,
+  "wordEffect": "highlight",
+  "maxWordsPerLine": 3,
+  "maxCharsPerLine": 18,
+  "maxLines": 2,
+  "entry": "pop",
+  "exit": "none",
+  "animMs": 110,
+  "anchor": "bottom",
+  "offsetYPct": 0.06
+}

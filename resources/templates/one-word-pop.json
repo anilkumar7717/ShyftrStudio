@@ -1,0 +1,32 @@
+{
+  "id": "one-word-pop",
+  "name": "One-Word Pop",
+  "family": "One-word pop",
+  "description": "Each word enters on its own with a controlled scale pop.",
+  "fontFamilies": [
+    "Arial Black",
+    "Helvetica Neue",
+    "Segoe UI Black",
+    "Impact",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 900,
+  "sizePct": 0.09,
+  "uppercase": true,
+  "textColor": "#ffffffff",
+  "activeColor": "#ffffffff",
+  "outlineColor": "#ff000000",
+  "outlineWidthPct": 0.14,
+  "shadowColor": "#b0000000",
+  "shadowOffsetPct": 0.05,
+  "wordEffect": "activeOnly",
+  "popScale": 1.25,
+  "maxWordsPerLine": 4,
+  "maxCharsPerLine": 24,
+  "maxLines": 1,
+  "entry": "pop",
+  "exit": "none",
+  "animMs": 140,
+  "anchor": "middle",
+  "offsetYPct": -0.1
+}

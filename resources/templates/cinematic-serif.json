@@ -1,0 +1,31 @@
+{
+  "id": "cinematic-serif",
+  "name": "Cinematic Serif",
+  "family": "Cinematic",
+  "description": "Refined serif typography, smooth fades and generous margins.",
+  "fontFamilies": [
+    "Georgia",
+    "Baskerville",
+    "Cambria",
+    "Times New Roman",
+    "DejaVu Serif"
+  ],
+  "fontWeight": 400,
+  "italic": true,
+  "sizePct": 0.046,
+  "textColor": "#fff8f1e3",
+  "activeColor": "#fff8f1e3",
+  "outlineColor": "#00000000",
+  "outlineWidthPct": 0,
+  "shadowColor": "#c8000000",
+  "shadowOffsetPct": 0.05,
+  "wordEffect": "none",
+  "maxWordsPerLine": 9,
+  "maxCharsPerLine": 44,
+  "maxLines": 2,
+  "maxWidthPct": 0.7,
+  "entry": "fade",
+  "exit": "fade",
+  "animMs": 400,
+  "offsetYPct": 0.02
+}

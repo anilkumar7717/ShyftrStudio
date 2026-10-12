@@ -1,0 +1,37 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/bold-box-highlight.json</file>
+        <file>templates/bold-highlight-green.json</file>
+        <file>templates/bold-highlight-yellow.json</file>
+        <file>templates/bubble-pill.json</file>
+        <file>templates/cinematic-serif.json</file>
+        <file>templates/cinematic-wide.json</file>
+        <file>templates/comic-bubble.json</file>
+        <file>templates/editorial-italic.json</file>
+        <file>templates/gamer-glow.json</file>
+        <file>templates/glass-card.json</file>
+        <file>templates/hollow-outline.json</file>
+        <file>templates/karaoke-fill-cyan.json</file>
+        <file>templates/karaoke-fill-gold.json</file>
+        <file>templates/minimal-box.json</file>
+        <file>templates/minimal-clean.json</file>
+        <file>templates/mint-karaoke.json</file>
+        <file>templates/neon-glow.json</file>
+        <file>templates/neon-gradient.json</file>
+        <file>templates/news-bar.json</file>
+        <file>templates/one-word-pop.json</file>
+        <file>templates/one-word-punch.json</file>
+        <file>templates/podcast-split.json</file>
+        <file>templates/pop-pill.json</file>
+        <file>templates/red-alert.json</file>
+        <file>templates/shadow-stack.json</file>
+        <file>templates/speaker-labels.json</file>
+        <file>templates/story-clean.json</file>
+        <file>templates/streaming-classic.json</file>
+        <file>templates/sunset-gradient.json</file>
+        <file>templates/tilt-punch.json</file>
+        <file>templates/typewriter.json</file>
+        <file>templates/word-reveal.json</file>
+        <file>icons/app-icon-1024.png</file>
+    </qresource>
+</RCC>

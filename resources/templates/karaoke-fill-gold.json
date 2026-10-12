@@ -1,0 +1,27 @@
+{
+  "id": "karaoke-fill-gold",
+  "name": "Karaoke Fill \u00b7 Gold",
+  "family": "Karaoke fill",
+  "description": "Gold fill sweep for music and tutorials.",
+  "fontFamilies": [
+    "Helvetica Neue",
+    "Avenir Next",
+    "Segoe UI",
+    "Arial",
+    "Inter",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 800,
+  "sizePct": 0.056,
+  "textColor": "#ffe9ecef",
+  "activeColor": "#fffcc419",
+  "outlineColor": "#ff212529",
+  "outlineWidthPct": 0.14,
+  "wordEffect": "karaoke",
+  "maxWordsPerLine": 5,
+  "maxCharsPerLine": 30,
+  "maxLines": 2,
+  "entry": "fade",
+  "exit": "fade",
+  "animMs": 150
+}

@@ -1,0 +1,26 @@
+{
+  "id": "word-reveal",
+  "name": "Word Reveal",
+  "family": "Creator",
+  "description": "Words appear one by one as they are spoken.",
+  "fontFamilies": [
+    "Arial Black",
+    "Helvetica Neue",
+    "Segoe UI Black",
+    "Impact",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 800,
+  "sizePct": 0.056,
+  "textColor": "#ffffffff",
+  "activeColor": "#ffffffff",
+  "outlineColor": "#ff000000",
+  "outlineWidthPct": 0.14,
+  "wordEffect": "reveal",
+  "maxWordsPerLine": 4,
+  "maxCharsPerLine": 24,
+  "maxLines": 2,
+  "entry": "none",
+  "exit": "fade",
+  "animMs": 90
+}

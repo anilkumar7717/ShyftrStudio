@@ -1,0 +1,29 @@
+{
+  "id": "minimal-clean",
+  "name": "Minimal Clean",
+  "family": "Minimal clean",
+  "description": "Simple lower-third sans-serif with a subtle shadow. Business and interviews.",
+  "fontFamilies": [
+    "Helvetica Neue",
+    "Avenir Next",
+    "Segoe UI",
+    "Arial",
+    "Inter",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 500,
+  "sizePct": 0.045,
+  "textColor": "#ffffffff",
+  "activeColor": "#ffffffff",
+  "outlineColor": "#00000000",
+  "outlineWidthPct": 0,
+  "shadowColor": "#b4000000",
+  "shadowOffsetPct": 0.06,
+  "wordEffect": "none",
+  "maxWordsPerLine": 8,
+  "maxCharsPerLine": 42,
+  "maxLines": 2,
+  "entry": "fade",
+  "exit": "fade",
+  "animMs": 180
+}

@@ -1,0 +1,30 @@
+{
+  "id": "editorial-italic",
+  "name": "Editorial Italic",
+  "family": "Cinematic",
+  "description": "Elegant italic serif with a soft shadow; the spoken word turns champagne gold.",
+  "fontFamilies": [
+    "Playfair Display",
+    "Didot",
+    "Georgia",
+    "Times New Roman",
+    "DejaVu Serif"
+  ],
+  "fontWeight": 600,
+  "italic": true,
+  "sizePct": 0.058,
+  "textColor": "#fffaf6ee",
+  "activeColor": "#ffe8c27a",
+  "outlineColor": "#00000000",
+  "outlineWidthPct": 0,
+  "shadowColor": "#a0000000",
+  "shadowOffsetPct": 0.05,
+  "wordEffect": "highlight",
+  "maxWordsPerLine": 6,
+  "maxCharsPerLine": 36,
+  "maxLines": 2,
+  "entry": "fade",
+  "exit": "fade",
+  "animMs": 260,
+  "rank": 17
+}

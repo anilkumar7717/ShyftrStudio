@@ -1,0 +1,28 @@
+{
+  "id": "bold-highlight-green",
+  "name": "Bold Highlight \u00b7 Green",
+  "family": "Bold highlight",
+  "description": "Heavy captions with a lime active word.",
+  "fontFamilies": [
+    "Arial Black",
+    "Helvetica Neue",
+    "Segoe UI Black",
+    "Impact",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 900,
+  "sizePct": 0.06,
+  "uppercase": true,
+  "textColor": "#ffffffff",
+  "activeColor": "#ff69f0ae",
+  "outlineColor": "#ff000000",
+  "outlineWidthPct": 0.16,
+  "wordEffect": "highlight",
+  "maxWordsPerLine": 3,
+  "maxCharsPerLine": 18,
+  "maxLines": 2,
+  "entry": "fade",
+  "exit": "none",
+  "animMs": 100,
+  "offsetYPct": 0.06
+}

@@ -1,0 +1,33 @@
+{
+  "id": "news-bar",
+  "name": "News Bar",
+  "family": "Minimal clean",
+  "description": "Full-width lower bar, news ticker style.",
+  "fontFamilies": [
+    "Helvetica Neue",
+    "Avenir Next",
+    "Segoe UI",
+    "Arial",
+    "Inter",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 700,
+  "sizePct": 0.042,
+  "textColor": "#ffffffff",
+  "activeColor": "#ffffd43b",
+  "outlineColor": "#00000000",
+  "outlineWidthPct": 0,
+  "shadowColor": "#00000000",
+  "boxMode": "bar",
+  "boxColor": "#e61c3faa",
+  "boxPaddingPct": 0.45,
+  "boxRadiusPct": 0,
+  "align": "left",
+  "wordEffect": "highlight",
+  "maxWordsPerLine": 9,
+  "maxCharsPerLine": 48,
+  "maxLines": 1,
+  "entry": "slideUp",
+  "exit": "fade",
+  "animMs": 200
+}

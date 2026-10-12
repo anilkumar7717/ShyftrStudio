@@ -1,0 +1,33 @@
+{
+  "id": "speaker-labels",
+  "name": "Speaker Labels",
+  "family": "Speaker labels",
+  "description": "Speaker name tag with per-speaker accent colour. Podcasts and interviews.",
+  "fontFamilies": [
+    "Helvetica Neue",
+    "Avenir Next",
+    "Segoe UI",
+    "Arial",
+    "Inter",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 700,
+  "sizePct": 0.046,
+  "textColor": "#ffffffff",
+  "activeColor": "#ffffffff",
+  "outlineColor": "#ff000000",
+  "outlineWidthPct": 0.1,
+  "boxMode": "cue",
+  "boxColor": "#a6101418",
+  "boxPaddingPct": 0.35,
+  "boxRadiusPct": 0.2,
+  "showSpeakerLabel": true,
+  "speakerColors": true,
+  "wordEffect": "none",
+  "maxWordsPerLine": 7,
+  "maxCharsPerLine": 38,
+  "maxLines": 2,
+  "entry": "fade",
+  "exit": "fade",
+  "animMs": 160
+}

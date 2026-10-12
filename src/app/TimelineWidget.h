@@ -1,0 +1,113 @@
+#pragma once
+
+#include "../captions/CaptionEngine.h"
+#include "../core/Document.h"
+
+#include <QAbstractScrollArea>
+#include <QHash>
+
+namespace ss {
+
+class MediaCache;
+
+class TimelineWidget : public QAbstractScrollArea {
+    Q_OBJECT
+public:
+    TimelineWidget(Document *doc, MediaCache *cache, QWidget *parent = nullptr);
+
+    void setCompact(bool c);
+    void setSnapping(bool on) { m_snap = on; }
+    bool snapping() const { return m_snap; }
+    void zoomIn();
+    void zoomOut();
+    void zoomToFit();
+    void ensurePlayheadVisible(bool page);
+    double pxPerSec() const { return m_pxPerSec; }
+
+signals:
+    void seekRequested(ss::TimeUs t);
+    void clipActivated(const QString &clipId);       // double-click
+    void cueActivated(const QString &trackId, int cue);
+    void filesDropped(const QStringList &paths, ss::TimeUs at, const QString &trackId);
+    void statusMessage(const QString &msg);
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+    void mousePressEvent(QMouseEvent *e) override;
+    void mouseMoveEvent(QMouseEvent *e) override;
+    void mouseReleaseEvent(QMouseEvent *e) override;
+    void mouseDoubleClickEvent(QMouseEvent *e) override;
+    void wheelEvent(QWheelEvent *e) override;
+    void contextMenuEvent(QContextMenuEvent *e) override;
+    void resizeEvent(QResizeEvent *e) override;
+    void dragEnterEvent(QDragEnterEvent *e) override;
+    void dragMoveEvent(QDragMoveEvent *e) override;
+    void dropEvent(QDropEvent *e) override;
+    bool viewportEvent(QEvent *e) override;
+
+private:
+    struct Row {
+        int trackIndex = -1;
+        int y = 0; // content y (below ruler)
+        int h = 0;
+    };
+    enum class Part { None, Body, EdgeStart, EdgeEnd, FadeIn, FadeOut };
+    struct Hit {
+        int row = -1;
+        QString clipId;
+        Part part = Part::None;
+        int cueIndex = -1;
+        bool cueEdgeStart = false, cueEdgeEnd = false;
+        bool header = false;
+        QString headerButton;
+    };
+    enum class Drag { None, Scrub, Move, TrimStart, TrimEnd, FadeIn, FadeOut, CueStart, CueEnd };
+
+    void rebuild();
+    void updateScrollbars();
+    int headerWidth() const { return m_compact ? 116 : 150; }
+    int rulerHeight() const { return 28; }
+    double xForTime(TimeUs t) const;
+    TimeUs timeForX(double x) const;
+    int rowAtY(int y) const;
+    QRect clipRect(const Row &row, const Clip &c) const;
+    Hit hitTest(const QPoint &pos) const;
+    QColor colorFor(const Clip &c) const;
+    void paintRuler(QPainter &p);
+    void paintRow(QPainter &p, const Row &row);
+    void paintClip(QPainter &p, const Row &row, const Clip &c, const QRect &r, bool ghost);
+    void paintHeader(QPainter &p, const Row &row);
+    QStringList headerButtons(const Track &t) const;
+    void toggleHeaderButton(int trackIndex, const QString &btn);
+    TimeUs snapTime(TimeUs t, const QStringList &exclude, bool *snapped) const;
+    void showClipMenu(const QPoint &global, const QString &clipId);
+    void showTrackMenu(const QPoint &global, int trackIndex);
+    void showEmptyMenu(const QPoint &global, TimeUs at, int trackIndex);
+
+    Document *m_doc;
+    MediaCache *m_cache;
+    QVector<Row> m_rows;
+    QHash<QString, QVector<CueInstance>> m_cues; // caption track id -> mapped cues
+    double m_pxPerSec = 80;
+    bool m_compact = false;
+    int m_density = 0; // 0 normal, 1 compact, 2 dense (chosen to fit the available height)
+    bool m_snap = true;
+
+    // drag state
+    Drag m_drag = Drag::None;
+    QPoint m_pressPos;
+    QString m_dragClip;
+    QStringList m_dragIds;
+    bool m_dragLinked = true;
+    TimeUs m_dragDelta = 0;
+    TimeUs m_dragValue = 0;
+    QString m_dragTargetTrack;
+    QString m_dragCueTrack;
+    int m_dragCue = -1;
+    bool m_dragMoved = false;
+    TimeUs m_snapLine = -1;
+    TimeUs m_dropTime = -1;
+    int m_dropRow = -1;
+};
+
+} // namespace ss

@@ -1,0 +1,31 @@
+{
+  "id": "podcast-split",
+  "name": "Podcast Split",
+  "family": "Speaker labels",
+  "description": "Speakers alternate between left and right placement.",
+  "fontFamilies": [
+    "Helvetica Neue",
+    "Avenir Next",
+    "Segoe UI",
+    "Arial",
+    "Inter",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 700,
+  "sizePct": 0.048,
+  "textColor": "#ffffffff",
+  "activeColor": "#ffffffff",
+  "outlineColor": "#ff000000",
+  "outlineWidthPct": 0.12,
+  "showSpeakerLabel": true,
+  "speakerColors": true,
+  "speakerPlacement": "alternateSides",
+  "wordEffect": "highlight",
+  "maxWordsPerLine": 5,
+  "maxCharsPerLine": 28,
+  "maxLines": 2,
+  "maxWidthPct": 0.55,
+  "entry": "slideUp",
+  "exit": "fade",
+  "animMs": 180
+}

@@ -1,0 +1,31 @@
+{
+  "id": "streaming-classic",
+  "name": "Streaming Classic",
+  "family": "Minimal clean",
+  "description": "Quiet, readable subtitles like streaming platforms: regular weight, soft shadow, no effects.",
+  "fontFamilies": [
+    "Inter",
+    "Avenir Next",
+    "SF Pro Display",
+    "Helvetica Neue",
+    "Segoe UI",
+    "Arial",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 500,
+  "sizePct": 0.048,
+  "textColor": "#fff2f2f2",
+  "activeColor": "#fff2f2f2",
+  "outlineColor": "#c0000000",
+  "outlineWidthPct": 0.05,
+  "shadowColor": "#b0000000",
+  "shadowOffsetPct": 0.05,
+  "wordEffect": "none",
+  "maxWordsPerLine": 8,
+  "maxCharsPerLine": 42,
+  "maxLines": 2,
+  "entry": "none",
+  "exit": "none",
+  "animMs": 0,
+  "rank": 23
+}

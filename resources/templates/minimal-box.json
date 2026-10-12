@@ -1,0 +1,32 @@
+{
+  "id": "minimal-box",
+  "name": "Minimal Box",
+  "family": "Minimal clean",
+  "description": "White text on a soft translucent box, broadcast style.",
+  "fontFamilies": [
+    "Helvetica Neue",
+    "Avenir Next",
+    "Segoe UI",
+    "Arial",
+    "Inter",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 500,
+  "sizePct": 0.044,
+  "textColor": "#ffffffff",
+  "activeColor": "#ffffffff",
+  "outlineColor": "#00000000",
+  "outlineWidthPct": 0,
+  "shadowColor": "#00000000",
+  "boxMode": "line",
+  "boxColor": "#b3000000",
+  "boxPaddingPct": 0.28,
+  "boxRadiusPct": 0.12,
+  "wordEffect": "none",
+  "maxWordsPerLine": 8,
+  "maxCharsPerLine": 42,
+  "maxLines": 2,
+  "entry": "fade",
+  "exit": "fade",
+  "animMs": 150
+}

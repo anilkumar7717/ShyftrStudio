@@ -1,0 +1,29 @@
+{
+  "id": "typewriter",
+  "name": "Typewriter",
+  "family": "Creator",
+  "description": "Characters type on in sync with speech, monospace.",
+  "fontFamilies": [
+    "Menlo",
+    "Consolas",
+    "Courier New",
+    "DejaVu Sans Mono"
+  ],
+  "fontWeight": 600,
+  "sizePct": 0.044,
+  "textColor": "#ffe6fffa",
+  "activeColor": "#ffe6fffa",
+  "outlineColor": "#00000000",
+  "outlineWidthPct": 0,
+  "boxMode": "cue",
+  "boxColor": "#cc0b0f14",
+  "boxPaddingPct": 0.4,
+  "boxRadiusPct": 0.08,
+  "wordEffect": "typewriter",
+  "maxWordsPerLine": 6,
+  "maxCharsPerLine": 34,
+  "maxLines": 2,
+  "entry": "none",
+  "exit": "fade",
+  "animMs": 120
+}

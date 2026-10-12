@@ -1,0 +1,31 @@
+{
+  "id": "one-word-punch",
+  "name": "One-Word Punch",
+  "family": "One-word pop",
+  "description": "Single words in bold red with a punchy scale-in.",
+  "fontFamilies": [
+    "Impact",
+    "Arial Black",
+    "Haettenschweiler",
+    "DejaVu Sans"
+  ],
+  "fontWeight": 900,
+  "sizePct": 0.1,
+  "uppercase": true,
+  "textColor": "#ffff4d4d",
+  "activeColor": "#ffff4d4d",
+  "outlineColor": "#ffffffff",
+  "outlineWidthPct": 0.1,
+  "shadowColor": "#c0000000",
+  "shadowOffsetPct": 0.07,
+  "wordEffect": "activeOnly",
+  "popScale": 1.4,
+  "maxWordsPerLine": 3,
+  "maxCharsPerLine": 20,
+  "maxLines": 1,
+  "entry": "pop",
+  "exit": "none",
+  "animMs": 120,
+  "anchor": "middle",
+  "offsetYPct": -0.05
+}
