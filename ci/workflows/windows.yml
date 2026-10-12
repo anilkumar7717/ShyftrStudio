@@ -1,0 +1,132 @@
+# Builds the Windows app on GitHub's Windows machines and publishes:
+#   ShyftrStudio-windows.zip   - portable folder (unzip and run "Shyftr Studio.exe")
+#   ShyftrStudio-Setup.exe     - installer with Start-menu / desktop shortcuts and uninstaller
+# Both bundle Qt, FFmpeg and whisper-cli. Speech models are added inside the app.
+# Runs on every push to main/master, on version tags (v1.2.3 -> GitHub Release), or by hand
+# from the Actions tab ("Run workflow").
+name: windows-exe
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to attach files to a GitHub Release on tags
+
+env:
+  QT_VERSION: '6.8.3'
+  WHISPER_VERSION: 'v1.9.5'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: 'qtmultimedia'
+          cache: true
+
+      - name: Install Ninja and Inno Setup
+        shell: pwsh
+        run: choco install ninja innosetup -y --no-progress
+
+      - name: Download FFmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg
+          $bin = (Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          "FFMPEG_BIN=$bin" | Out-File -Append $env:GITHUB_ENV
+          $bin | Out-File -Append $env:GITHUB_PATH
+
+      - name: Cache whisper.cpp build
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: whisper-out
+          key: whisper-${{ env.WHISPER_VERSION }}-msvc-x64-v1
+
+      - name: Build whisper-cli
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch $env:WHISPER_VERSION https://github.com/ggml-org/whisper.cpp whisper-src
+          # GGML_NATIVE=OFF: portable CPU code, so the exe runs on any x64 PC, not just this build machine
+          cmake -S whisper-src -B whisper-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF `
+                -DGGML_NATIVE=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF
+          if ($LASTEXITCODE) { exit 1 }
+          cmake --build whisper-build --target whisper-cli
+          if ($LASTEXITCODE) { exit 1 }
+          New-Item -ItemType Directory -Force whisper-out | Out-Null
+          $exe = Get-ChildItem whisper-build -Recurse -Filter whisper-cli.exe | Select-Object -First 1
+          Copy-Item $exe.FullName whisper-out\
+          Get-ChildItem $exe.DirectoryName -Filter *.dll | Copy-Item -Destination whisper-out\
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        continue-on-error: true   # a test failure is reported but still produces the downloads
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package portable folder
+        shell: pwsh
+        run: |
+          $dist = "dist\ShyftrStudio"
+          New-Item -ItemType Directory -Force $dist | Out-Null
+          Copy-Item "build\Shyftr Studio.exe" $dist
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --compiler-runtime "$dist\Shyftr Studio.exe"
+          if ($LASTEXITCODE) { exit 1 }
+          Copy-Item "$env:FFMPEG_BIN\ffmpeg.exe", "$env:FFMPEG_BIN\ffprobe.exe" $dist
+          Copy-Item whisper-out\* $dist
+          Copy-Item installer\windows\README-FIRST.txt $dist
+          # sanity checks: the pieces the app cannot start or work without
+          foreach ($f in "Shyftr Studio.exe", "Qt6Core.dll", "Qt6Widgets.dll", "Qt6Multimedia.dll", "platforms\qwindows.dll",
+                         "ffmpeg.exe", "ffprobe.exe", "whisper-cli.exe") {
+            if (-not (Test-Path "$dist\$f")) { Write-Error "Missing $f in package"; exit 1 }
+          }
+          & "$dist\ffmpeg.exe" -hide_banner -version | Select-Object -First 1
+          & "$dist\whisper-cli.exe" --help 2>&1 | Select-Object -First 3
+          Compress-Archive -Path $dist -DestinationPath dist\ShyftrStudio-windows.zip -Force
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $ver = if ($env:GITHUB_REF -like 'refs/tags/v*') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '0.1.0' }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" installer\windows\ShyftrStudio.iss
+          if ($LASTEXITCODE) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShyftrStudio-windows
+          path: |
+            dist/ShyftrStudio-windows.zip
+            dist/ShyftrStudio-Setup.exe
+          retention-days: 30
+
+      - name: Attach to GitHub Release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ShyftrStudio-windows.zip
+            dist/ShyftrStudio-Setup.exe

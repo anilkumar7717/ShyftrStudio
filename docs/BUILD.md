@@ -20,12 +20,28 @@ The app finds Homebrew's `ffmpeg`, `ffprobe` and `whisper-cli` in `/opt/homebrew
 
 Homebrew's whisper.cpp is built with Metal, so transcription uses the Apple GPU unless *Preferences → Performance → Use GPU* is off.
 
-## Windows 11 (x64)
-```powershell
-# Qt 6.8 MSVC 2022 via the Qt online installer (or aqtinstall), CMake, Ninja, Visual Studio 2022 Build Tools
-.\scripts\build-windows.ps1 -QtDir C:\Qt\6.8.3\msvc2022_64
+## Windows 10/11 (x64): make the .exe
+Build on a Windows PC (a Mac can't produce the Windows .exe). Install once: Visual Studio 2022 Build Tools ("Desktop development with C++"), Qt 6.8 for MSVC 2022 64-bit with the **Qt Multimedia** module, CMake and Ninja (`winget install Kitware.CMake Ninja-build.Ninja`), and FFmpeg (`winget install Gyan.FFmpeg`).
+
+Open **x64 Native Tools Command Prompt for VS 2022**, go to the project folder and run:
+```bat
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -QtDir C:\Qt\6.8.3\msvc2022_64
 ```
-The script configures, builds and tests, then runs `windeployqt`. Put `ffmpeg.exe`, `ffprobe.exe` and `whisper-cli.exe` (with its DLLs) next to `Shyftr Studio.exe`, or set their paths in Preferences → Tools.
+This builds, runs the tests (add `-SkipTests` to skip them) and creates `dist\ShyftrStudio\Shyftr Studio.exe` with every DLL it needs, plus `dist\ShyftrStudio-windows.zip` to share. FFmpeg, ffprobe and whisper-cli are copied in when they're on PATH; otherwise put them next to the .exe or set their paths in Preferences → Tools.
+
+### No Windows PC? Let GitHub build it
+The workflow `windows.yml` builds everything on GitHub's Windows machines. It bundles Qt, FFmpeg and a whisper-cli built from source, and produces two downloads:
+- **ShyftrStudio-windows.zip**: portable; unzip it and run `Shyftr Studio.exe`.
+- **ShyftrStudio-Setup.exe**: an installer with Start-menu and desktop shortcuts and an uninstaller.
+
+One-time setup on the Mac:
+```bash
+cd ~/Projects/ShyftrStudio
+bash scripts/install-workflows.sh      # copies ci/workflows/*.yml into .github/workflows/
+git init -b main && git add . && git commit -m "Shyftr Studio"
+gh repo create shyftr-studio --private --source . --push   # or create the repo on github.com and git push
+```
+Each push to `main` runs the build (about 20–30 minutes the first time). Open the repository on GitHub → **Actions** → the latest **windows-exe** run → **Artifacts** → *ShyftrStudio-windows*. You can also start it by hand there with **Run workflow**. To publish a release, push a version tag (`git tag v0.1.0 && git push --tags`): both files are attached to a GitHub Release automatically.
 
 ## Options
 | CMake option | Default | Meaning |
