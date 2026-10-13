@@ -54,11 +54,16 @@ if ($models) {
 Copy-Item "installer\windows\README-FIRST.txt" $Dist
 
 Step "Checking the package"
-$required = @($exeName, "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Multimedia.dll", "Qt6Concurrent.dll",
-              "platforms\qwindows.dll", "imageformats\qjpeg.dll", "ffmpeg.exe", "ffprobe.exe", "whisper-cli.exe",
+$required = @($exeName, "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Multimedia.dll",
+              "platforms\qwindows.dll", "ffmpeg.exe", "ffprobe.exe", "whisper-cli.exe",
               "vcruntime140.dll", "msvcp140.dll")
 $missing = $required | Where-Object { -not (Test-Path (Join-Path $Dist $_)) }
 if ($missing) { throw "Missing from the package: $($missing -join ', ')" }
+# Only the files the exe itself loads are deployed (e.g. no Qt6Concurrent.dll: the app uses its
+# header-only parts). Missing DLLs are caught for real by the start-up test below.
+if (-not (Test-Path "$Dist\imageformats\qjpeg.dll")) {
+    Write-Host "  warning: no JPEG image plugin - JPEG photos may not import" -ForegroundColor Yellow
+}
 if (-not (Get-ChildItem "$Dist\multimedia" -Filter *.dll -ErrorAction SilentlyContinue)) {
     Write-Host "  warning: no Qt Multimedia backend plugin - video preview may not play" -ForegroundColor Yellow
 }

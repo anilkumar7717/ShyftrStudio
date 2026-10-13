@@ -10,6 +10,12 @@ namespace ss {
 namespace TimelineOps {
 
 QString addTrack(Project &p, TrackKind kind, const QString &name = {});
+// Inserts a new track at a position in p.tracks (clamped; tracks of a kind stay together).
+QString addTrackAt(Project &p, TrackKind kind, int index, const QString &name = {});
+// New track right next to `nextTo` on screen: above it for video, below it for audio.
+QString addTrackNextTo(Project &p, const QString &nextTo, TrackKind kind);
+// Pass as trackId to the add*Clip functions to put the clip on a brand-new track.
+inline const QString kNewTrack = QStringLiteral("+new");
 bool removeTrack(Project &p, const QString &trackId);
 bool moveTrack(Project &p, const QString &trackId, int delta);
 
@@ -61,6 +67,28 @@ QStringList defaultFillerWords();
 // Inserts a still (image media) of `duration` at timeline time t on the clip's track,
 // pushing the rest of that track (and linked audio) later. Returns the new clip id.
 QString insertFreezeFrame(Project &p, const QString &clipId, TimeUs t, const QString &imageMediaId, TimeUs duration);
+
+// ---- drag and drop placement
+enum class PlaceMode {
+    Auto,     // where it was dropped if free; otherwise on a new track next to that one
+    Insert,   // push everything at/after the drop point later to make room (ripple insert)
+    NewTrack, // always on a brand-new track
+};
+// The insert position for time t: t itself in a gap, else the nearer edge of the clip under t.
+TimeUs insertPoint(const Track &t, TimeUs at, const QStringList &ignore = {});
+// Opens a gap of `dur` at `at` on the track: clips starting at/after `at` (and their linked
+// partners, with everything after them on the partners' tracks) move later. Ignored clips stay.
+bool rippleInsertGap(Project &p, const QString &trackId, TimeUs at, TimeUs dur, const QStringList &ignore = {});
+// Places media assets one after another starting at `at`. trackId may be empty (best track)
+// or kNewTrack. Returns the primary clip ids (empty on failure).
+QStringList placeMedia(Project &p, const QStringList &mediaIds, const QString &trackId, TimeUs at,
+                       PlaceMode mode = PlaceMode::Auto);
+// Drag-move of clips (the timeline's clip drag). delta/targetTrackId as for moveClips; with
+// Auto a blocked drop onto another track goes to a new track; Insert pushes clips aside.
+bool moveClipsPlaced(Project &p, const QStringList &clipIds, const QString &primaryId, TimeUs delta,
+                     const QString &targetTrackId, PlaceMode mode, bool includeLinked = true);
+// Moves a track to a new position among the tracks of its kind (index into p.tracks).
+bool moveTrackTo(Project &p, const QString &trackId, int newIndex);
 
 // Snap candidates (clip edges, playhead, in/out marks), excluding the given clips.
 QVector<TimeUs> snapPoints(const Project &p, const QStringList &exclude = {});

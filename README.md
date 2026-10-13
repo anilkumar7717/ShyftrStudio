@@ -57,7 +57,7 @@ Windows: see `scripts/build-windows.ps1` and [docs/BUILD.md](docs/BUILD.md).
 ### 01 Editing: P0 core
 | Area | Implemented |
 |---|---|
-| Timeline | Unlimited video/audio tracks; move (with snapping) across tracks; trim edges; split (one clip / all tracks); ripple delete; linked audio/video with unlink (Alt-drag ignores links); cut/copy/paste/duplicate; track mute/lock/hide; in/out range; zoom/scroll; next/previous edit |
+| Timeline | Unlimited video/audio tracks; drag and drop from the media bin, desktop and Library with a live preview; move (with snapping) across tracks, onto new tracks or as an insert that pushes clips aside; drag to reorder tracks; trim edges; split (one clip / all tracks); ripple delete; linked audio/video with unlink (Alt-drag ignores links); cut/copy/paste/duplicate; track mute/lock/hide; in/out range; zoom/scroll; next/previous edit |
 | Video | Crop, fit/fill/stretch to any aspect ratio, scale, position, free and 90° rotation, flips, opacity, speed 0.1–16× (audio pitch preserved), fades in/out, cross-dissolve (overlapping tracks) and dip-to-black |
 | Audio | Gain per clip and per track, fades, mute, waveforms, voice-over recording |
 | Text | Titles (font, weight, size, colours, outline, box, position, align, fade/slide/pop/typewriter), lower-third/centre/top presets, shapes (rectangle/ellipse/line), editable subtitle tracks |

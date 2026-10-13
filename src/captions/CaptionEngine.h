@@ -101,6 +101,9 @@ namespace TranscriptEdit {
 bool setCueText(Transcript &t, int cueIndex, const QString &text);
 bool setWordText(Transcript &t, int wordIndex, const QString &text);
 bool setCueTiming(Transcript &t, int cueIndex, TimeUs start, TimeUs end); // scales its words
+// Shifts a whole caption (its words keep their spacing) by delta, clamped between its
+// neighbours. Returns false if it could not move at all.
+bool moveCue(Transcript &t, int cueIndex, TimeUs delta);
 bool setWordTiming(Transcript &t, int wordIndex, TimeUs start, TimeUs end);
 bool splitCue(Transcript &t, int cueIndex, int atWordIndex);   // new cue starts at atWordIndex
 bool mergeWithNext(Transcript &t, int cueIndex);

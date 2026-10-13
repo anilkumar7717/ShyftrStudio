@@ -6,6 +6,9 @@
 #include <QAbstractScrollArea>
 #include <QHash>
 
+class QTimer;
+class QMimeData;
+
 namespace ss {
 
 class MediaCache;
@@ -28,8 +31,10 @@ signals:
     void seekRequested(ss::TimeUs t);
     void clipActivated(const QString &clipId);       // double-click
     void cueActivated(const QString &trackId, int cue);
-    void filesDropped(const QStringList &paths, ss::TimeUs at, const QString &trackId);
-    void libraryItemDropped(const QString &itemId, const QString &clipId, ss::TimeUs at);
+    // trackId may be TimelineOps::kNewTrack; insert = push existing clips aside (Ctrl/Cmd held)
+    void filesDropped(const QStringList &paths, ss::TimeUs at, const QString &trackId, bool insert);
+    // clipId "-" = dropped on empty space
+    void libraryItemDropped(const QString &itemId, const QString &clipId, ss::TimeUs at, const QString &trackId);
     void statusMessage(const QString &msg);
 
 protected:
@@ -44,6 +49,9 @@ protected:
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dragMoveEvent(QDragMoveEvent *e) override;
     void dropEvent(QDropEvent *e) override;
+    void dragLeaveEvent(QDragLeaveEvent *e) override;
+    void keyPressEvent(QKeyEvent *e) override;
+    void keyReleaseEvent(QKeyEvent *e) override;
     bool viewportEvent(QEvent *e) override;
 
 private:
@@ -62,7 +70,14 @@ private:
         bool header = false;
         QString headerButton;
     };
-    enum class Drag { None, Scrub, Move, TrimStart, TrimEnd, FadeIn, FadeOut, CueStart, CueEnd };
+    enum class Drag { None, Scrub, Move, TrimStart, TrimEnd, FadeIn, FadeOut, CueStart, CueEnd, CueMove, TrackReorder };
+    // Something being dragged in from outside (media bin, Finder/Explorer, Library)
+    struct DropGhost {
+        TimeUs duration = 0;
+        QString label;
+        bool audio = false;
+        QColor color;
+    };
 
     void rebuild();
     void updateScrollbars();
@@ -71,6 +86,19 @@ private:
     double xForTime(TimeUs t) const;
     TimeUs timeForX(double x) const;
     int rowAtY(int y) const;
+    // +1: the "new track" lane above the top track, -1: the lane below the last track, 0: a track
+    int laneAtY(int y) const;
+    int topLaneHeight() const { return 22; }
+    int bottomLaneHeight() const { return 36; }
+    QRect laneRect(int lane) const;
+    void paintDropFeedback(QPainter &p);
+    void paintLaneHint(QPainter &p, int lane, bool active, const QString &text);
+    void handleDragMove(const QPoint &pos, Qt::KeyboardModifiers mods);
+    void updateMoveDrag(const QPoint &pos, Qt::KeyboardModifiers mods);
+    void updateExternalDrag(const QPoint &pos, const QMimeData *mime, Qt::KeyboardModifiers mods);
+    void autoScrollStep();
+    void clearExternalDrag();
+    TimeUs cueShiftDelta() const;
     QRect clipRect(const Row &row, const Clip &c) const;
     Hit hitTest(const QPoint &pos) const;
     QColor colorFor(const Clip &c) const;
@@ -109,6 +137,24 @@ private:
     TimeUs m_snapLine = -1;
     TimeUs m_dropTime = -1;
     int m_dropRow = -1;
+    // drag-and-drop feedback
+    int m_dragLane = 0;          // lane under the cursor while moving clips
+    bool m_dragInsert = false;   // Ctrl/Cmd held: insert and push clips aside
+    bool m_dragNewAbove = false; // target track busy there: the move makes a new track next to it
+    bool m_dropNewAbove = false; // same for an external drop
+    TimeUs m_insertAt = -1;      // where an insert will happen (for the marker)
+    int m_dropLane = 0;          // lane under the cursor for an external drop
+    bool m_dropInsert = false;
+    QVector<DropGhost> m_dropGhost;
+    QString m_dropTargetClip;    // clip a Library item will be applied to
+    QString m_dropLibraryId;
+    bool m_extDrag = false;
+    QPoint m_lastDragPos;
+    Qt::KeyboardModifiers m_lastMods;
+    QTimer *m_autoScroll = nullptr;
+    int m_reorderTrack = -1;     // track index being dragged by its header
+    int m_reorderTo = -1;        // destination track index
+    TimeUs m_cueOrigStart = 0, m_cueOrigEnd = 0;
 };
 
 } // namespace ss

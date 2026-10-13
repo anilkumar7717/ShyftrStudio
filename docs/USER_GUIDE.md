@@ -12,12 +12,18 @@
 Dockable **Media**, **Effects**, **Inspector**, **AI Subtitles** and **Timeline** panels. Rearrange them freely; each mode remembers its own layout.
 
 ### Timeline
-- Drag clips to move them, including between tracks of the same kind. Linked audio follows; hold **Alt** to move one side only. Hold **Ctrl** to disable snapping temporarily.
+- **Drag and drop everything:** drag media from the Media bin, files from Finder/Explorer, or Library items (text, stickers, shapes, effects, filters, transitions) straight onto the timeline. A ghost shows exactly where it will land before you let go.
+- Drag clips to move them, including between tracks. Linked audio follows; hold **Alt** to move one side only. Hold **Shift** while dragging to turn snapping off for a moment.
+- If the spot you drop on is already taken, the item goes on a **new track** right next to that one (the ghost shows "new track"), so nothing is pushed off-screen.
+- Hold **Ctrl/⌘** while dropping or moving to **insert**: a yellow marker shows the cut where it goes, and everything after it moves later (linked audio too). This is also how you reorder clips on a track.
+- Drop onto the dashed **+ New track** lanes above the top track or below the last one to put things on a fresh track.
+- Drop an effect, filter, speed curve or voice effect **onto a clip** to apply it to that clip (it lights up); drop a transition **near a cut**. Dropped on empty space, effects and filters become an effect layer.
+- Drag a **track header** up or down to reorder tracks. Drag a **caption block** to retime it. While dragging near the edges the timeline scrolls; press **Esc** to cancel.
 - Drag clip edges to trim. Drag the small **dots at the top corners** to set fades.
 - Click the ruler to scrub. Use Ctrl/⌘+wheel to zoom and Shift+wheel to scroll horizontally.
 - Track buttons: **M** mute, **L** lock, **H** hide, **CC** burn captions into exports.
 - Right-click clips, tracks or empty space for more commands (speed, fades, unlink, rename, add title, and so on).
-- Caption lane: click a caption to jump to it, drag its edges to retime it, and double-click to edit its text. An orange underline marks words that need review.
+- Caption lane: click a caption to jump to it, drag it (or its edges) to retime it, and double-click to edit its text. An orange underline marks words that need review.
 
 ### Library (text, stickers, effects, transitions, filters…)
 The **Library** panel on the left has live previews of everything you can add. Search at the top, or pick a tab:

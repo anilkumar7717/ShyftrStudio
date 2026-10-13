@@ -564,11 +564,34 @@ void EffectsBrowser::build()
 
 // ------------------------------------------------------------------ apply
 
-void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QString &targetClip, TimeUs atIn)
+QString EffectsBrowser::dropKind(const QString &id)
+{
+    if (id.startsWith("text:") || id.startsWith("sticker:") || id.startsWith("title-") || id.startsWith("shape-"))
+        return "clip";
+    if (id.startsWith("fx:") || id.startsWith("look:"))
+        return "either";
+    return "target";
+}
+
+TimeUs EffectsBrowser::dropDuration(const QString &id)
+{
+    if (id.startsWith("sticker:") || id.startsWith("fx:") || id.startsWith("look:"))
+        return 3 * kUsPerSec;
+    return 4 * kUsPerSec;
+}
+
+void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QString &targetClip, TimeUs atIn,
+                                 const QString &trackId)
 {
     if (!m_doc->isOpen())
         return;
-    const QStringList sel = targetClip.isEmpty() ? m_doc->selectedClips() : QStringList{targetClip};
+    m_targetTrack = trackId;
+    struct ResetTrack {
+        QString &t;
+        ~ResetTrack() { t.clear(); }
+    } resetTrack{m_targetTrack};
+    const QStringList sel = targetClip == "-" ? QStringList()
+                            : targetClip.isEmpty() ? m_doc->selectedClips() : QStringList{targetClip};
     const TimeUs at = atIn >= 0 ? atIn : m_doc->playhead();
     const bool placed = pos.x() >= 0 && pos.y() >= 0;
     const Project &proj = m_doc->project();
@@ -584,7 +607,8 @@ void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QS
 
     auto forSel = [&](const QString &what, const std::function<void(Clip &, Track &)> &fn) {
         if (sel.isEmpty()) {
-            emit statusMessage("Select one or more clips first");
+            emit statusMessage(targetClip == "-" ? "Drop this onto a clip on the timeline"
+                                                 : "Select one or more clips first");
             return;
         }
         m_doc->apply(what, [&](Project &p) {
@@ -634,7 +658,7 @@ void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QS
                 }
                 QString newId;
                 m_doc->apply("Add text", [&](Project &p) {
-                    newId = TimelineOps::addTitleClip(p, {}, at, 4 * kUsPerSec, tp);
+                    newId = TimelineOps::addTitleClip(p, m_targetTrack, at, 4 * kUsPerSec, tp);
                     return !newId.isEmpty();
                 });
                 if (!newId.isEmpty())
@@ -656,7 +680,7 @@ void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QS
         }
         QString newId;
         m_doc->apply("Add sticker", [&](Project &p) {
-            newId = TimelineOps::addTitleClip(p, {}, at, 3 * kUsPerSec, tp);
+            newId = TimelineOps::addTitleClip(p, m_targetTrack, at, 3 * kUsPerSec, tp);
             if (Clip *c = p.findClip(newId))
                 c->name = "Sticker " + tp.text;
             return !newId.isEmpty();
@@ -675,7 +699,7 @@ void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QS
             fx.effects << EffectSpec{type, 0.6, 1.0};
             QString newId;
             m_doc->apply("Add effect layer", [&](Project &p) {
-                newId = TimelineOps::addEffectClip(p, {}, at, 3 * kUsPerSec, fx, ImageFx::effectLabel(type));
+                newId = TimelineOps::addEffectClip(p, m_targetTrack, at, 3 * kUsPerSec, fx, ImageFx::effectLabel(type));
                 return !newId.isEmpty();
             });
             if (!newId.isEmpty())
@@ -734,7 +758,7 @@ void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QS
                     fx.look = l.id;
                     QString newId;
                     m_doc->apply("Add filter layer", [&](Project &p) {
-                        newId = TimelineOps::addEffectClip(p, {}, at, 3 * kUsPerSec, fx, "Filter: " + l.label);
+                        newId = TimelineOps::addEffectClip(p, m_targetTrack, at, 3 * kUsPerSec, fx, "Filter: " + l.label);
                         if (Clip *c = p.findClip(newId))
                             c->color = l.color;
                         return !newId.isEmpty();
@@ -844,7 +868,7 @@ void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QS
             tp.x = tp.align == "left" ? std::clamp(pos.x() + 0.12, 0.0, 1.0) : pos.x();
             tp.y = pos.y();
         }
-        m_doc->apply("Add title", [&](Project &p) { return !TimelineOps::addTitleClip(p, {}, at, 4 * kUsPerSec, tp).isEmpty(); });
+        m_doc->apply("Add title", [&](Project &p) { return !TimelineOps::addTitleClip(p, m_targetTrack, at, 4 * kUsPerSec, tp).isEmpty(); });
     } else if (id.startsWith("shape-")) {
         ShapeProps sp;
         if (id == "shape-bar") {
@@ -907,7 +931,7 @@ void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QS
                 sp.x = pos.x();
             sp.y = pos.y();
         }
-        m_doc->apply("Add shape", [&](Project &p) { return !TimelineOps::addShapeClip(p, {}, at, 4 * kUsPerSec, sp).isEmpty(); });
+        m_doc->apply("Add shape", [&](Project &p) { return !TimelineOps::addShapeClip(p, m_targetTrack, at, 4 * kUsPerSec, sp).isEmpty(); });
     } else if (id == "look-reset") {
         look(0, 1, 1, 0, 0);
         forSel("Reset filter", [](Clip &c, Track &) { c.fx.adjust = ExtraAdjust(); });

@@ -74,7 +74,8 @@ private:
 
     // editing
     void importDialog();
-    void importFiles(const QStringList &paths, TimeUs at = -1, const QString &trackId = {}, bool asMusic = false);
+    void importFiles(const QStringList &paths, TimeUs at = -1, const QString &trackId = {}, bool asMusic = false,
+                     bool insert = false);
     void addMusic();
     void recordVoiceOver();
     void openExport(const QString &presetId = {});

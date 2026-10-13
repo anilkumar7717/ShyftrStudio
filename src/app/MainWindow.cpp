@@ -169,9 +169,10 @@ void MainWindow::buildUi()
     connect(m_viewer, &ViewerWidget::effectDropped, this, [this](const QString &id, const QPointF &pos) {
         m_effects->applyEffect(id, pos);
     });
-    connect(m_timeline, &TimelineWidget::libraryItemDropped, this, [this](const QString &id, const QString &clip, TimeUs at) {
-        m_effects->applyEffect(id, QPointF(-1, -1), clip, at);
-    });
+    connect(m_timeline, &TimelineWidget::libraryItemDropped, this,
+            [this](const QString &id, const QString &clip, TimeUs at, const QString &track) {
+                m_effects->applyEffect(id, QPointF(-1, -1), clip, at, track);
+            });
     connect(m_inspector, &InspectorWidget::reverseRequested, m_tools, &ToolsController::reverseClip);
     connect(m_inspector, &InspectorWidget::freezeFrameRequested, m_tools, &ToolsController::freezeFrame);
     connect(m_inspector, &InspectorWidget::stabilizeRequested, m_tools, &ToolsController::stabilizeClip);
@@ -194,9 +195,10 @@ void MainWindow::buildUi()
         else if (tool == "silences")
             m_tools->removeSilences();
     });
-    connect(m_timeline, &TimelineWidget::filesDropped, this, [this](const QStringList &paths, TimeUs at, const QString &track) {
-        importFiles(paths, at, track);
-    });
+    connect(m_timeline, &TimelineWidget::filesDropped, this,
+            [this](const QStringList &paths, TimeUs at, const QString &track, bool insert) {
+                importFiles(paths, at, track, false, insert);
+            });
     connect(m_mediaBin, &MediaBinWidget::importRequested, this, &MainWindow::importDialog);
     connect(m_mediaBin, &MediaBinWidget::recordRequested, this, &MainWindow::recordVoiceOver);
     connect(m_mediaBin, &MediaBinWidget::relinkRequested, this, &MainWindow::relinkMedia);
@@ -1060,7 +1062,7 @@ void MainWindow::importDialog()
         importFiles(files);
 }
 
-void MainWindow::importFiles(const QStringList &pathsIn, TimeUs at, const QString &trackId, bool asMusic)
+void MainWindow::importFiles(const QStringList &pathsIn, TimeUs at, const QString &trackId, bool asMusic, bool insert)
 {
     if (!m_doc.isOpen())
         return;
@@ -1086,7 +1088,7 @@ void MainWindow::importFiles(const QStringList &pathsIn, TimeUs at, const QStrin
         QStringList errors;
     };
     auto *watcher = new QFutureWatcher<Result>(this);
-    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, at, trackId, asMusic]() {
+    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, at, trackId, asMusic, insert]() {
         const Result r = watcher->result();
         watcher->deleteLater();
         if (!m_doc.isOpen())
@@ -1108,7 +1110,12 @@ void MainWindow::importFiles(const QStringList &pathsIn, TimeUs at, const QStrin
                 p.media << m;
                 added << m.id;
             }
-            if (at >= 0 || placeAuto || asMusic) {
+            if (at >= 0 && !asMusic) {
+                // dropped on the timeline: same placement rules as dragging from the media bin
+                const QStringList placed =
+                    TimelineOps::placeMedia(p, added, trackId, at, insert ? TimelineOps::PlaceMode::Insert : TimelineOps::PlaceMode::Auto);
+                Q_UNUSED(placed);
+            } else if (at >= 0 || placeAuto || asMusic) {
                 TimeUs t = at >= 0 ? at : (asMusic ? 0 : p.duration());
                 const TimeUs videoEnd = p.duration();
                 for (const QString &id : added) {
@@ -1426,8 +1433,10 @@ void MainWindow::showShortcutsHelp()
     for (const auto &e : Shortcuts::instance().entries())
         if (!e.key.isEmpty())
             html += QString("<tr><td><b>%1</b></td><td>%2</td></tr>").arg(e.key.toString(QKeySequence::NativeText).toHtmlEscaped(), e.label.toHtmlEscaped());
-    html += "</table><p>Mouse: drag clips to move (Alt = ignore links, Ctrl = no snapping), drag edges to trim, "
-            "drag the dots at the top corners to fade, Ctrl/⌘+wheel to zoom.</p><p>Remap shortcuts in Preferences → Shortcuts.</p>";
+    html += "</table><p>Mouse: drag clips to move (Alt = ignore links, Shift = no snapping, Ctrl/⌘ = insert and push "
+            "clips aside), drag edges to trim, drag the dots at the top corners to fade, Ctrl/⌘+wheel to zoom. "
+            "Drag media, files and Library items onto the timeline; drop on a busy spot for a new track, or on the "
+            "dashed lanes. Drag track headers to reorder tracks; Esc cancels a drag.</p><p>Remap shortcuts in Preferences → Shortcuts.</p>";
     QDialog dlg(this);
     dlg.setWindowTitle("Keyboard shortcuts");
     dlg.resize(520, 640);

@@ -667,6 +667,28 @@ bool TranscriptEdit::setCueTiming(Transcript &t, int ci, TimeUs start, TimeUs en
     return true;
 }
 
+bool TranscriptEdit::moveCue(Transcript &t, int ci, TimeUs delta)
+{
+    if (ci < 0 || ci >= t.cues.size() || delta == 0)
+        return false;
+    Cue &c = t.cues[ci];
+    const TimeUs os = t.words[c.first].start;
+    const TimeUs oe = t.words[c.last].end;
+    const TimeUs prevEnd = ci > 0 ? t.words[t.cues[ci - 1].last].end : 0;
+    const TimeUs nextStart = ci + 1 < t.cues.size() ? t.words[t.cues[ci + 1].first].start : std::numeric_limits<TimeUs>::max();
+    delta = std::max(delta, prevEnd - os);
+    if (nextStart != std::numeric_limits<TimeUs>::max())
+        delta = std::min(delta, nextStart - oe);
+    if (delta == 0)
+        return false;
+    for (int i = c.first; i <= c.last; ++i) {
+        t.words[i].start += delta;
+        t.words[i].end += delta;
+    }
+    c.manual = true;
+    return true;
+}
+
 bool TranscriptEdit::setWordTiming(Transcript &t, int wi, TimeUs start, TimeUs end)
 {
     if (wi < 0 || wi >= t.words.size() || end <= start)

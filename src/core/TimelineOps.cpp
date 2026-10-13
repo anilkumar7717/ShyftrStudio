@@ -112,6 +112,47 @@ bool moveTrack(Project &p, const QString &trackId, int delta)
     return true;
 }
 
+QString addTrackAt(Project &p, TrackKind kind, int index, const QString &name)
+{
+    Track t;
+    t.id = newId();
+    t.kind = kind;
+    t.name = name.isEmpty() ? uniqueTrackName(p, kind) : name;
+    // keep tracks of one kind together: clamp into (or right next to) that kind's block
+    int first = -1, last = -1;
+    for (int i = 0; i < p.tracks.size(); ++i)
+        if (p.tracks[i].kind == kind) {
+            if (first < 0)
+                first = i;
+            last = i;
+        }
+    if (first < 0)
+        return addTrack(p, kind, t.name);
+    index = std::clamp(index, first, last + 1);
+    p.tracks.insert(index, t);
+    return t.id;
+}
+
+QString addTrackNextTo(Project &p, const QString &nextTo, TrackKind kind)
+{
+    const int idx = p.trackIndex(nextTo);
+    if (idx < 0 || p.tracks[idx].kind != kind)
+        return addTrack(p, kind);
+    // video: a higher index is drawn above; audio/captions: a higher index is drawn below
+    return addTrackAt(p, kind, idx + 1);
+}
+
+bool moveTrackTo(Project &p, const QString &trackId, int newIndex)
+{
+    const int idx = p.trackIndex(trackId);
+    if (idx < 0 || newIndex < 0 || newIndex >= p.tracks.size() || newIndex == idx)
+        return false;
+    if (p.tracks[newIndex].kind != p.tracks[idx].kind)
+        return false;
+    p.tracks.move(idx, newIndex);
+    return true;
+}
+
 bool isRangeFree(const Track &t, TimeUs start, TimeUs dur, const QStringList &ignore)
 {
     if (start < 0)
@@ -162,9 +203,11 @@ QString addMediaClip(Project &p, const QString &mediaId, const QString &trackId,
     start = snapToFrame(std::max<TimeUs>(0, start), p.canvas.fps);
 
     const TrackKind primaryKind = m->kind == MediaKind::Audio ? TrackKind::Audio : TrackKind::Video;
-    Track *primary = trackId.isEmpty() ? nullptr : p.findTrack(trackId);
+    Track *primary = (trackId.isEmpty() || trackId == kNewTrack) ? nullptr : p.findTrack(trackId);
     if (primary && (primary->kind != primaryKind || primary->locked))
         primary = nullptr;
+    if (trackId == kNewTrack)
+        primary = p.findTrack(addTrack(p, primaryKind));
     if (primary && !isRangeFree(*primary, start, dur))
         start = nextFreeStart(*primary, start, dur);
     if (!primary) {
@@ -202,7 +245,11 @@ QString addMediaClip(Project &p, const QString &mediaId, const QString &trackId,
 
 static QString addGraphicClip(Project &p, const QString &trackId, TimeUs start, TimeUs dur, Clip c)
 {
-    Track *t = p.findTrack(trackId);
+    start = snapToFrame(std::max<TimeUs>(0, start), p.canvas.fps);
+    Track *t = trackId == kNewTrack ? p.findTrack(addTrack(p, TrackKind::Video)) : p.findTrack(trackId);
+    // the requested track is busy at that time: use a new track right above it
+    if (t && t->kind == TrackKind::Video && !t->locked && !isRangeFree(*t, start, dur))
+        t = p.findTrack(addTrackNextTo(p, t->id, TrackKind::Video));
     if (!t || t->kind != TrackKind::Video || t->locked) {
         t = nullptr;
         for (int i = p.tracks.size() - 1; i >= 0; --i)
@@ -740,6 +787,214 @@ QVector<const Clip *> activeAudioClips(const Project &p, TimeUs t)
         }
     }
     return out;
+}
+
+// ------------------------------------------------------------------ drag and drop placement
+
+TimeUs insertPoint(const Track &t, TimeUs at, const QStringList &ignore)
+{
+    at = std::max<TimeUs>(0, at);
+    for (const Clip &c : t.clips) {
+        if (ignore.contains(c.id))
+            continue;
+        if (at > c.start && at < c.end())
+            return (at - c.start) < (c.end() - at) ? c.start : c.end();
+    }
+    return at;
+}
+
+bool rippleInsertGap(Project &p, const QString &trackId, TimeUs at, TimeUs dur, const QStringList &ignore)
+{
+    if (dur <= 0)
+        return true;
+    const Track *start = p.findTrack(trackId);
+    if (!start || start->locked)
+        return false;
+    // Collect the tracks to ripple: this one, plus the tracks of linked partners of every
+    // clip that moves (repeated until nothing new is added).
+    QSet<QString> tracks{trackId};
+    bool grew = true;
+    while (grew) {
+        grew = false;
+        for (const Track &t : p.tracks) {
+            if (!tracks.contains(t.id))
+                continue;
+            for (const Clip &c : t.clips) {
+                if (c.start < at || c.linkId.isEmpty() || ignore.contains(c.id))
+                    continue;
+                for (Clip *l : p.linkedClips(c.id)) {
+                    Track *lt = nullptr;
+                    p.findClip(l->id, &lt);
+                    if (lt && !tracks.contains(lt->id)) {
+                        tracks.insert(lt->id);
+                        grew = true;
+                    }
+                }
+            }
+        }
+    }
+    for (const QString &tid : tracks)
+        if (const Track *t = p.findTrack(tid); !t || t->locked)
+            return false;
+    for (Track &t : p.tracks) {
+        if (!tracks.contains(t.id))
+            continue;
+        for (Clip &c : t.clips)
+            if (c.start >= at && !ignore.contains(c.id))
+                c.start += dur;
+        t.sortClips();
+    }
+    return true;
+}
+
+QStringList placeMedia(Project &p, const QStringList &mediaIds, const QString &trackIdIn, TimeUs at, PlaceMode mode)
+{
+    QStringList out;
+    at = snapToFrame(std::max<TimeUs>(0, at), p.canvas.fps);
+    auto kindOf = [&](const MediaAsset *m) { return m->kind == MediaKind::Audio ? TrackKind::Audio : TrackKind::Video; };
+    auto durOf = [&](const MediaAsset *m) { return m->kind == MediaKind::Image ? 5 * kUsPerSec : m->duration; };
+    QVector<const MediaAsset *> items;
+    for (const QString &id : mediaIds)
+        if (const MediaAsset *m = p.findMedia(id); m && durOf(m) > 0)
+            items << m;
+    if (items.isEmpty())
+        return out;
+    // One destination track per kind, decided up front so a multi-item drop stays together.
+    QHash<int, QString> dest; // TrackKind -> track id
+    QHash<int, TimeUs> cursor;
+    const Track *dropTrack = (trackIdIn.isEmpty() || trackIdIn == kNewTrack) ? nullptr : p.findTrack(trackIdIn);
+    if (dropTrack && dropTrack->locked)
+        dropTrack = nullptr;
+    for (TrackKind k : {TrackKind::Video, TrackKind::Audio}) {
+        TimeUs total = 0;
+        for (const MediaAsset *m : items)
+            if (kindOf(m) == k)
+                total += durOf(m);
+        if (total == 0)
+            continue;
+        TimeUs t0 = at;
+        QString tid;
+        const bool onDropTrack = dropTrack && dropTrack->kind == k;
+        if (mode == PlaceMode::NewTrack || trackIdIn == kNewTrack) {
+            tid = onDropTrack ? addTrackNextTo(p, dropTrack->id, k) : addTrack(p, k);
+        } else if (mode == PlaceMode::Insert) {
+            tid = onDropTrack ? dropTrack->id : QString();
+            if (tid.isEmpty())
+                for (const Track &t : p.tracks)
+                    if (t.kind == k && !t.locked) {
+                        tid = t.id;
+                        break;
+                    }
+            if (tid.isEmpty())
+                tid = addTrack(p, k);
+            t0 = insertPoint(*p.findTrack(tid), at);
+            if (!rippleInsertGap(p, tid, t0, total))
+                return {};
+        } else if (onDropTrack) {
+            tid = isRangeFree(*dropTrack, at, total) ? dropTrack->id : addTrackNextTo(p, dropTrack->id, k);
+        } else {
+            for (const Track &t : p.tracks)
+                if (t.kind == k && !t.locked && isRangeFree(t, at, total)) {
+                    tid = t.id;
+                    break;
+                }
+            if (tid.isEmpty())
+                tid = addTrack(p, k);
+        }
+        dest[int(k)] = tid;
+        cursor[int(k)] = t0;
+    }
+    for (const MediaAsset *m : items) {
+        const int k = int(kindOf(m));
+        const QString cid = addMediaClip(p, m->id, dest[k], cursor[k]);
+        if (cid.isEmpty())
+            return {};
+        cursor[k] = p.findClip(cid)->end();
+        out << cid;
+    }
+    return out;
+}
+
+bool moveClipsPlaced(Project &p, const QStringList &clipIds, const QString &primaryId, TimeUs delta,
+                     const QString &targetTrackId, PlaceMode mode, bool includeLinked)
+{
+    Track *src = nullptr;
+    const Clip *primary = p.findClip(primaryId, &src);
+    if (!primary || src->locked)
+        return false;
+    const TrackKind kind = src->kind;
+    const QString srcId = src->id;
+    delta = snapToFrame(delta, p.canvas.fps);
+
+    if (mode == PlaceMode::NewTrack || targetTrackId == kNewTrack) {
+        const QString nt = (!targetTrackId.isEmpty() && targetTrackId != kNewTrack) ? addTrackNextTo(p, targetTrackId, kind)
+                                                                                     : addTrack(p, kind);
+        return moveClips(p, clipIds, delta, primaryId, nt, includeLinked);
+    }
+
+    const QString tgt = targetTrackId.isEmpty() ? srcId : targetTrackId;
+    const Track *tgtTrack = p.findTrack(tgt);
+    if (!tgtTrack || tgtTrack->kind != kind || tgtTrack->locked)
+        return false;
+
+    if (mode == PlaceMode::Insert) {
+        const QStringList ids = expandLinked(p, clipIds, includeLinked);
+        // span of the moving clips that sit on the primary's track
+        TimeUs gStart = primary->start, gEnd = primary->end();
+        for (const QString &id : ids) {
+            Track *t = nullptr;
+            const Clip *c = p.findClip(id, &t);
+            if (c && t->id == srcId) {
+                gStart = std::min(gStart, c->start);
+                gEnd = std::max(gEnd, c->end());
+            }
+        }
+        const TimeUs want = std::max<TimeUs>(0, gStart + delta);
+        const TimeUs t0 = insertPoint(*tgtTrack, want, ids);
+        // Lift the moving clips out, open the gap, then drop them in.
+        QVector<QPair<QString, Clip>> lifted; // destination track id, clip
+        for (const QString &id : ids) {
+            Track *t = nullptr;
+            Clip *c = p.findClip(id, &t);
+            if (!c)
+                return false;
+            lifted.append({(t->id == srcId) ? tgt : t->id, *c});
+            t->clips.removeAt(t->indexOfClip(id));
+        }
+        if (!rippleInsertGap(p, tgt, t0, gEnd - gStart))
+            return false;
+        const TimeUs d = t0 - gStart;
+        for (auto &[tid, c] : lifted) {
+            c.start += d;
+            Track *t = p.findTrack(tid);
+            if (!isRangeFree(*t, c.start, c.duration())) {
+                // a linked partner whose own track is busy there goes to a new track
+                t = p.findTrack(addTrackNextTo(p, tid, t->kind));
+            }
+            t->clips.append(c);
+            t->sortClips();
+        }
+        return true;
+    }
+
+    // Auto: exactly where it was dropped if that fits ...
+    Project trial = p;
+    TimeUs applied = 0;
+    if (moveClips(trial, clipIds, delta, primaryId, tgt == srcId ? QString() : tgt, includeLinked, &applied) && applied == delta) {
+        p = trial;
+        return true;
+    }
+    // ... dropped on another track that is busy there: a new track next to it
+    if (tgt != srcId) {
+        Project trial2 = p;
+        const QString nt = addTrackNextTo(trial2, tgt, kind);
+        if (moveClips(trial2, clipIds, delta, primaryId, nt, includeLinked, &applied) && applied == delta) {
+            p = trial2;
+            return true;
+        }
+    }
+    // ... otherwise the classic behaviour: as close as possible without overlapping
+    return moveClips(p, clipIds, delta, primaryId, tgt == srcId ? QString() : tgt, includeLinked);
 }
 
 } // namespace TimelineOps

@@ -4,9 +4,15 @@
 #include "../core/TimelineOps.h"
 #include "../media/MediaCache.h"
 #include "Theme.h"
+#include "EffectsBrowser.h"
 
 #include <QApplication>
 #include <QContextMenuEvent>
+#include <QCursor>
+#include <QDragLeaveEvent>
+#include <QKeyEvent>
+#include <QTimer>
+#include <QFileInfo>
 #include <QHelpEvent>
 #include <QInputDialog>
 #include <QMenu>
@@ -35,6 +41,9 @@ TimelineWidget::TimelineWidget(Document *doc, MediaCache *cache, QWidget *parent
     setFocusPolicy(Qt::StrongFocus);
     setAccessibleName("Timeline");
     setMinimumHeight(150);
+    m_autoScroll = new QTimer(this);
+    m_autoScroll->setInterval(30);
+    connect(m_autoScroll, &QTimer::timeout, this, &TimelineWidget::autoScrollStep);
     connect(doc, &Document::projectChanged, this, &TimelineWidget::rebuild);
     connect(doc, &Document::projectReset, this, &TimelineWidget::rebuild);
     connect(doc, &Document::selectionChanged, viewport(), qOverload<>(&QWidget::update));
@@ -61,7 +70,7 @@ void TimelineWidget::rebuild()
         return;
     }
     const Project &p = m_doc->project();
-    int y = 0;
+    int y = topLaneHeight();
     auto add = [&](int idx, int h) {
         m_rows << Row{idx, y, h};
         y += h + 2;
@@ -70,7 +79,7 @@ void TimelineWidget::rebuild()
     int nv = 0, na = 0, nc = 0;
     for (const auto &t : p.tracks)
         (t.kind == TrackKind::Video ? nv : t.kind == TrackKind::Audio ? na : nc)++;
-    const int avail = viewport()->height() - rulerHeight() - 4;
+    const int avail = viewport()->height() - rulerHeight() - 4 - topLaneHeight() - bottomLaneHeight() / 2;
     static const int heights[3][3] = {{64, 54, 38}, {46, 38, 30}, {34, 30, 24}};
     m_density = m_compact ? 1 : 0;
     while (m_density < 2) {
@@ -103,7 +112,7 @@ void TimelineWidget::updateScrollbars()
     horizontalScrollBar()->setRange(0, std::max(0, int(contentW) - visW));
     horizontalScrollBar()->setPageStep(std::max(1, visW));
     horizontalScrollBar()->setSingleStep(20);
-    const int contentH = m_rows.isEmpty() ? 0 : m_rows.last().y + m_rows.last().h + 20;
+    const int contentH = m_rows.isEmpty() ? 0 : m_rows.last().y + m_rows.last().h + 2 + bottomLaneHeight();
     const int visH = viewport()->height() - rulerHeight();
     verticalScrollBar()->setRange(0, std::max(0, contentH - visH));
     verticalScrollBar()->setPageStep(std::max(1, visH));
@@ -135,6 +144,29 @@ int TimelineWidget::rowAtY(int y) const
         if (cy >= m_rows[i].y && cy < m_rows[i].y + m_rows[i].h + 2)
             return i;
     return -1;
+}
+
+int TimelineWidget::laneAtY(int y) const
+{
+    if (y < rulerHeight())
+        return 0;
+    if (m_rows.isEmpty())
+        return -1;
+    const int cy = y - rulerHeight() + verticalScrollBar()->value();
+    if (cy < m_rows.first().y)
+        return 1;
+    if (cy >= m_rows.last().y + m_rows.last().h + 2)
+        return -1;
+    return 0;
+}
+
+QRect TimelineWidget::laneRect(int lane) const
+{
+    const int vs = verticalScrollBar()->value();
+    if (lane > 0)
+        return QRect(headerWidth(), rulerHeight() - vs, viewport()->width() - headerWidth(), topLaneHeight() - 2);
+    const int top = rulerHeight() + (m_rows.isEmpty() ? topLaneHeight() : m_rows.last().y + m_rows.last().h + 2) - vs;
+    return QRect(headerWidth(), top, viewport()->width() - headerWidth(), std::max(bottomLaneHeight() - 4, viewport()->height() - top - 2));
 }
 
 QRect TimelineWidget::clipRect(const Row &row, const Clip &c) const
@@ -271,15 +303,195 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         p.setPen(QPen(QColor("#FFD43B"), 1, Qt::DashLine));
         p.drawLine(QPointF(sx, rulerHeight()), QPointF(sx, viewport()->height()));
     }
-    if (m_dropTime >= 0 && m_dropRow >= 0 && m_dropRow < m_rows.size()) {
-        const Row &row = m_rows[m_dropRow];
-        const int top = rulerHeight() + row.y - verticalScrollBar()->value();
-        p.setPen(QPen(Theme::accent(), 2));
-        p.drawLine(QPointF(xForTime(m_dropTime), top), QPointF(xForTime(m_dropTime), top + row.h));
-    }
+    paintDropFeedback(p);
     // header column border
     p.setPen(QColor("#2E323B"));
     p.drawLine(headerWidth(), 0, headerWidth(), viewport()->height());
+}
+
+void TimelineWidget::paintLaneHint(QPainter &p, int lane, bool active, const QString &text)
+{
+    QRect r = laneRect(lane).adjusted(4, 2, -4, -2);
+    if (lane < 0)
+        r.setHeight(std::min(r.height(), bottomLaneHeight() - 6));
+    if (r.height() < 6)
+        return;
+    QColor c = Theme::accent();
+    c.setAlpha(active ? 60 : 18);
+    p.setBrush(c);
+    QColor pen = Theme::accent();
+    pen.setAlpha(active ? 255 : 110);
+    p.setPen(QPen(pen, 1, Qt::DashLine));
+    p.drawRoundedRect(r, 5, 5);
+    if (r.height() >= 14) {
+        QFont f = font();
+        f.setPointSizeF(f.pointSizeF() * 0.85);
+        p.setFont(f);
+        p.setPen(active ? Qt::white : Theme::textDim());
+        p.drawText(r.adjusted(10, 0, -10, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
+    }
+}
+
+void TimelineWidget::paintDropFeedback(QPainter &p)
+{
+    const Project &pr = m_doc->project();
+    const int vs = verticalScrollBar()->value();
+    auto rowTop = [&](const Row &row) { return rulerHeight() + row.y - vs; };
+    auto rowOfTrack = [&](const QString &id) -> int {
+        for (int i = 0; i < m_rows.size(); ++i)
+            if (pr.tracks[m_rows[i].trackIndex].id == id)
+                return i;
+        return -1;
+    };
+    auto insertMarker = [&](int ri, TimeUs at) {
+        if (ri < 0 || at < 0)
+            return;
+        const Row &row = m_rows[ri];
+        const double x = std::max<double>(xForTime(at), headerWidth() + 3);
+        const int top = rowTop(row);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#FFD43B"));
+        p.drawRect(QRectF(x - 1.5, top - 2, 3, row.h + 4));
+        QPainterPath l, r;
+        l.moveTo(x - 3, top + row.h / 2.0);
+        l.lineTo(x - 9, top + row.h / 2.0 - 5);
+        l.lineTo(x - 9, top + row.h / 2.0 + 5);
+        r.moveTo(x + 3, top + row.h / 2.0);
+        r.lineTo(x + 9, top + row.h / 2.0 - 5);
+        r.lineTo(x + 9, top + row.h / 2.0 + 5);
+        p.fillPath(l, QColor("#FFD43B"));
+        p.fillPath(r, QColor("#FFD43B"));
+    };
+    auto ghostRect = [&](const QRect &lane, TimeUs start, TimeUs dur, const QString &label, const QColor &col) {
+        const double x0 = xForTime(start), x1 = xForTime(start + dur);
+        QRectF r(x0, lane.top() + 1, std::max(6.0, x1 - x0), std::max(14, lane.height() - 2));
+        QColor fill = col;
+        fill.setAlpha(150);
+        p.setBrush(fill);
+        p.setPen(QPen(Qt::white, 1.5, Qt::DashLine));
+        p.drawRoundedRect(r, 4, 4);
+        if (r.width() > 24) {
+            QFont f = font();
+            f.setPointSizeF(f.pointSizeF() * 0.85);
+            p.setFont(f);
+            p.setPen(Qt::white);
+            p.drawText(r.adjusted(6, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                       QFontMetrics(f).elidedText(label, Qt::ElideRight, int(r.width()) - 10));
+        }
+    };
+
+    p.save();
+    p.setClipRect(QRect(headerWidth(), rulerHeight(), viewport()->width(), viewport()->height()));
+
+    // ---- moving clips
+    if (m_drag == Drag::Move && m_dragMoved) {
+        const Track *src = nullptr;
+        pr.findClip(m_dragClip, &src);
+        const bool audioDrag = src && src->kind == TrackKind::Audio;
+        paintLaneHint(p, 1, m_dragLane > 0, audioDrag ? "+ New audio track (added at the bottom)" : "+ New video track");
+        paintLaneHint(p, -1, m_dragLane < 0, audioDrag ? "+ New audio track" : "+ New video track (added at the top)");
+        if (m_dragTargetTrack == kNewTrack && src) {
+            const QRect lane = laneRect(m_dragLane).adjusted(0, 2, 0, -2);
+            QRect gl = lane;
+            gl.setHeight(std::min(lane.height(), 40));
+            if (m_dragLane > 0)
+                gl.setHeight(std::max(gl.height(), 18));
+            for (const QString &id : m_dragIds) {
+                const Track *t = nullptr;
+                const Clip *c = pr.findClip(id, &t);
+                if (c && t == src)
+                    ghostRect(gl, c->start + m_dragDelta, c->duration(), c->name, colorFor(*c));
+            }
+        }
+        if (m_dragNewAbove) {
+            const int ri = rowOfTrack(m_dragTargetTrack);
+            const Clip *c = pr.findClip(m_dragClip);
+            if (ri >= 0 && c) {
+                const Row &row = m_rows[ri];
+                QRect lane(headerWidth(), rowTop(row) + 2, viewport()->width(), row.h - 4);
+                lane.translate(0, pr.tracks[row.trackIndex].kind == TrackKind::Audio ? row.h / 2 : -row.h / 2);
+                ghostRect(lane, c->start + m_dragDelta, c->duration(), c->name + " · new track", colorFor(*c));
+            }
+        }
+        if (m_dragInsert && m_insertAt >= 0)
+            insertMarker(rowOfTrack(m_dragTargetTrack.isEmpty() && src ? src->id : m_dragTargetTrack), m_insertAt);
+    }
+
+    // ---- reordering a track by its header
+    if (m_drag == Drag::TrackReorder && m_dragMoved && m_reorderTo >= 0) {
+        const int ri = rowOfTrack(pr.tracks[m_reorderTo].id);
+        if (ri >= 0) {
+            const Row &row = m_rows[ri];
+            p.setClipping(false);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(Theme::accent(), 2));
+            p.drawRoundedRect(QRect(1, rowTop(row), viewport()->width() - 2, row.h), 4, 4);
+        }
+    }
+
+    // ---- something dragged in from outside
+    if (m_extDrag && m_dropTime >= 0) {
+        const bool needsTarget = !m_dropLibraryId.isEmpty() && EffectsBrowser::dropKind(m_dropLibraryId) == "target";
+        if (!needsTarget) {
+            bool anyVideo = false, anyAudio = false;
+            for (const DropGhost &g : m_dropGhost)
+                (g.audio ? anyAudio : anyVideo) = true;
+            const QString what = anyVideo && anyAudio ? "+ New tracks" : anyAudio ? "+ New audio track" : "+ New video track";
+            paintLaneHint(p, 1, m_dropLane > 0, anyAudio && !anyVideo ? what + " (added at the bottom)" : what);
+            paintLaneHint(p, -1, m_dropLane < 0, anyVideo && !anyAudio ? what + " (added at the top)" : what);
+        }
+        if (!m_dropTargetClip.isEmpty()) {
+            const Track *t = nullptr;
+            const Clip *c = pr.findClip(m_dropTargetClip, &t);
+            const int ri = t ? rowOfTrack(t->id) : -1;
+            if (c && ri >= 0) {
+                p.setBrush(QColor(255, 255, 255, 30));
+                p.setPen(QPen(Theme::accent(), 3));
+                p.drawRoundedRect(clipRect(m_rows[ri], *c), 4, 4);
+            }
+        } else if (m_dropLibraryId.startsWith("tr:")) {
+            if (m_dropRow >= 0) {
+                const Track &t = pr.tracks[m_rows[m_dropRow].trackIndex];
+                for (int i = 1; i < t.clips.size(); ++i)
+                    if (std::llabs(t.clips[i].start - m_dropTime) < TimeUs(std::max(0.6, 40.0 / m_pxPerSec) * kUsPerSec)) {
+                        const double x = xForTime(t.clips[i].start);
+                        const int top = rowTop(m_rows[m_dropRow]);
+                        p.setPen(Qt::NoPen);
+                        p.setBrush(Theme::accent());
+                        p.drawEllipse(QPointF(x, top + m_rows[m_dropRow].h / 2.0), 9, 9);
+                        break;
+                    }
+            }
+        } else if (!m_dropGhost.isEmpty()) {
+            QRect lane;
+            if (m_dropLane != 0) {
+                lane = laneRect(m_dropLane).adjusted(0, 2, 0, -2);
+                lane.setHeight(std::max(18, std::min(lane.height(), 40)));
+            } else if (m_dropRow >= 0) {
+                const Row &row = m_rows[m_dropRow];
+                lane = QRect(headerWidth(), rowTop(row) + 2, viewport()->width(), row.h - 4);
+                if (m_dropNewAbove) // straddle the edge where the new track will appear
+                    lane.translate(0, pr.tracks[row.trackIndex].kind == TrackKind::Audio ? row.h / 2 : -row.h / 2);
+                QColor hl = Theme::accent();
+                hl.setAlpha(22);
+                p.fillRect(QRect(headerWidth(), rowTop(row), viewport()->width(), row.h), hl);
+            }
+            if (!lane.isNull()) {
+                TimeUs t = m_dropInsert && m_insertAt >= 0 ? m_insertAt : m_dropTime;
+                for (const DropGhost &g : m_dropGhost) {
+                    ghostRect(lane, t, g.duration, m_dropNewAbove ? g.label + " · new track" : g.label, g.color);
+                    t += g.duration;
+                }
+            }
+            if (m_dropInsert)
+                insertMarker(m_dropRow, m_insertAt);
+        } else if (m_dropRow >= 0) {
+            const Row &row = m_rows[m_dropRow];
+            p.setPen(QPen(Theme::accent(), 2));
+            p.drawLine(QPointF(xForTime(m_dropTime), rowTop(row)), QPointF(xForTime(m_dropTime), rowTop(row) + row.h));
+        }
+    }
+    p.restore();
 }
 
 void TimelineWidget::paintRuler(QPainter &p)
@@ -388,7 +600,9 @@ void TimelineWidget::paintRow(QPainter &p, const Row &row)
         f.setPointSizeF(f.pointSizeF() * 0.85);
         p.setFont(f);
         for (const CueInstance &c : cues) {
-            const double x0 = xForTime(c.start), x1 = xForTime(c.end);
+            const TimeUs shift = (m_drag == Drag::CueMove && m_dragMoved && m_dragCueTrack == t.id && m_dragCue == c.cueIndex)
+                                     ? m_dragValue : 0;
+            const double x0 = xForTime(c.start + shift), x1 = xForTime(c.end + shift);
             if (x1 < headerWidth() || x0 > viewport()->width())
                 continue;
             QRectF r(x0, top + 3, std::max(2.0, x1 - x0 - 1), row.h - 6);
@@ -435,6 +649,8 @@ void TimelineWidget::paintRow(QPainter &p, const Row &row)
                 QString destTrack = src->id;
                 if (m_drag == Drag::Move) {
                     g.start += m_dragDelta;
+                    if (id == m_dragClip && (m_dragTargetTrack == kNewTrack || m_dragNewAbove))
+                        continue; // drawn in the new-track position by paintDropFeedback
                     if (id == m_dragClip && !m_dragTargetTrack.isEmpty())
                         destTrack = m_dragTargetTrack;
                 } else if (m_drag == Drag::TrimStart && id == m_dragClip) {
@@ -630,7 +846,7 @@ void TimelineWidget::paintClip(QPainter &p, const Row &row, const Clip &c, const
 
 TimeUs TimelineWidget::snapTime(TimeUs t, const QStringList &exclude, bool *snapped) const
 {
-    if (!m_snap || (QApplication::keyboardModifiers() & Qt::ControlModifier)) {
+    if (!m_snap || (QApplication::keyboardModifiers() & Qt::ShiftModifier)) {
         if (snapped)
             *snapped = false;
         return t;
@@ -659,6 +875,12 @@ void TimelineWidget::mousePressEvent(QMouseEvent *e)
     if (h.header) {
         if (!h.headerButton.isEmpty())
             toggleHeaderButton(m_rows[h.row].trackIndex, h.headerButton);
+        else if (h.row >= 0) {
+            // drag a track by its header to reorder it among tracks of the same kind
+            m_drag = Drag::TrackReorder;
+            m_reorderTrack = m_rows[h.row].trackIndex;
+            m_reorderTo = -1;
+        }
         return;
     }
     if (h.row >= 0 && h.cueIndex >= 0) {
@@ -670,8 +892,19 @@ void TimelineWidget::mousePressEvent(QMouseEvent *e)
             m_drag = Drag::CueStart;
         else if (h.cueEdgeEnd)
             m_drag = Drag::CueEnd;
-        else
+        else {
+            // drag the caption block to retime it; a plain click just seeks
+            m_drag = Drag::CueMove;
+            m_dragValue = 0;
+            m_cueOrigStart = m_cueOrigEnd = 0;
+            for (const CueInstance &ci : m_cues.value(t.id))
+                if (ci.cueIndex == h.cueIndex) {
+                    m_cueOrigStart = ci.start;
+                    m_cueOrigEnd = ci.end;
+                    break;
+                }
             emit seekRequested(timeForX(e->pos().x()));
+        }
         return;
     }
     if (h.clipId.isEmpty()) {
@@ -755,55 +988,60 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *e)
             cur = Qt::SizeHorCursor;
         else if (h.part == Part::FadeIn || h.part == Part::FadeOut)
             cur = Qt::PointingHandCursor;
-        else if (h.part == Part::Body)
+        else if (h.part == Part::Body || h.cueIndex >= 0)
+            cur = Qt::OpenHandCursor;
+        else if (h.header && h.headerButton.isEmpty() && h.row >= 0)
             cur = Qt::OpenHandCursor;
         viewport()->setCursor(cur);
         return;
     }
     if (!m_dragMoved && (e->pos() - m_pressPos).manhattanLength() < 3)
         return;
+    if (!m_dragMoved && m_drag != Drag::Scrub)
+        viewport()->setCursor(Qt::ClosedHandCursor);
     m_dragMoved = true;
+    if (!m_autoScroll->isActive())
+        m_autoScroll->start();
+    handleDragMove(e->pos(), e->modifiers());
+}
+
+void TimelineWidget::handleDragMove(const QPoint &pos, Qt::KeyboardModifiers mods)
+{
+    m_lastDragPos = pos;
+    m_lastMods = mods;
     const Project &p = m_doc->project();
-    const TimeUs t = std::max<TimeUs>(0, timeForX(e->pos().x()));
+    const TimeUs t = std::max<TimeUs>(0, timeForX(pos.x()));
     m_snapLine = -1;
     bool snapped = false;
     switch (m_drag) {
     case Drag::Scrub:
         emit seekRequested(t);
         break;
-    case Drag::Move: {
-        TimeUs delta = TimeUs((e->pos().x() - m_pressPos.x()) / m_pxPerSec * 1e6);
-        const Clip *c = p.findClip(m_dragClip);
-        if (c) {
-            // snap either edge of the primary clip
-            const TimeUs s = snapTime(c->start + delta, m_dragIds, &snapped);
-            if (snapped) {
-                delta = s - c->start;
-                m_snapLine = s;
-            } else {
-                const TimeUs en = snapTime(c->end() + delta, m_dragIds, &snapped);
-                if (snapped) {
-                    delta = en - c->end();
-                    m_snapLine = en;
-                }
-            }
-            TimeUs minStart = c->start;
-            for (const QString &id : m_dragIds)
-                if (const Clip *dc = p.findClip(id))
-                    minStart = std::min(minStart, dc->start);
-            delta = std::max(delta, -minStart);
+    case Drag::Move:
+        updateMoveDrag(pos, mods);
+        break;
+    case Drag::TrackReorder: {
+        const int ri = rowAtY(pos.y());
+        m_reorderTo = -1;
+        if (ri >= 0 && m_reorderTrack >= 0 && m_reorderTrack < p.tracks.size()) {
+            const int ti = m_rows[ri].trackIndex;
+            if (p.tracks[ti].kind == p.tracks[m_reorderTrack].kind && ti != m_reorderTrack)
+                m_reorderTo = ti;
         }
-        m_dragDelta = delta;
-        const int ri = rowAtY(e->pos().y());
-        m_dragTargetTrack.clear();
-        if (ri >= 0) {
-            const Track *src = nullptr;
-            p.findClip(m_dragClip, &src);
-            const Track &tgt = p.tracks[m_rows[ri].trackIndex];
-            if (src && tgt.kind == src->kind && tgt.id != src->id && !tgt.locked)
-                m_dragTargetTrack = tgt.id;
+        emit statusMessage(m_reorderTo >= 0 ? QString("Move track %1 to the position of %2").arg(p.tracks[m_reorderTrack].name, p.tracks[m_reorderTo].name)
+                                            : QString("Drag onto another track of the same kind to reorder"));
+        break;
+    }
+    case Drag::CueMove: {
+        TimeUs d = TimeUs((pos.x() - m_pressPos.x()) / m_pxPerSec * 1e6);
+        d = std::max(d, -m_cueOrigStart);
+        const TimeUs s2 = snapTime(m_cueOrigStart + d, {}, &snapped);
+        if (snapped) {
+            d = s2 - m_cueOrigStart;
+            m_snapLine = s2;
         }
-        emit statusMessage(QString("Move %1%2").arg(delta >= 0 ? "+" : "-").arg(formatClock(std::llabs(delta))));
+        m_dragValue = d;
+        emit statusMessage(QString("Caption %1%2").arg(d >= 0 ? "+" : "-").arg(formatClock(std::llabs(d))));
         break;
     }
     case Drag::TrimStart:
@@ -840,12 +1078,89 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *e)
     viewport()->update();
 }
 
+void TimelineWidget::updateMoveDrag(const QPoint &pos, Qt::KeyboardModifiers mods)
+{
+    const Project &p = m_doc->project();
+    bool snapped = false;
+    TimeUs delta = TimeUs((pos.x() - m_pressPos.x()) / m_pxPerSec * 1e6);
+    const Track *src = nullptr;
+    const Clip *c = p.findClip(m_dragClip, &src);
+    if (!c)
+        return;
+    // snap either edge of the primary clip
+    const TimeUs s = snapTime(c->start + delta, m_dragIds, &snapped);
+    if (snapped) {
+        delta = s - c->start;
+        m_snapLine = s;
+    } else {
+        const TimeUs en = snapTime(c->end() + delta, m_dragIds, &snapped);
+        if (snapped) {
+            delta = en - c->end();
+            m_snapLine = en;
+        }
+    }
+    TimeUs minStart = c->start;
+    for (const QString &id : m_dragIds)
+        if (const Clip *dc = p.findClip(id))
+            minStart = std::min(minStart, dc->start);
+    delta = std::max(delta, -minStart);
+    m_dragDelta = delta;
+
+    // where to: another track of the same kind, or a "new track" lane
+    m_dragLane = laneAtY(pos.y());
+    m_dragTargetTrack.clear();
+    if (m_dragLane != 0) {
+        m_dragTargetTrack = kNewTrack;
+    } else if (const int ri = rowAtY(pos.y()); ri >= 0) {
+        const Track &tgt = p.tracks[m_rows[ri].trackIndex];
+        if (src && tgt.kind == src->kind && tgt.id != src->id && !tgt.locked)
+            m_dragTargetTrack = tgt.id;
+    }
+    // Ctrl/Cmd: insert, pushing the clips at the drop point later
+    m_dragInsert = (mods & (Qt::ControlModifier | Qt::MetaModifier)) && m_dragTargetTrack != kNewTrack;
+    m_dragNewAbove = false;
+    if (!m_dragInsert && !m_dragTargetTrack.isEmpty() && m_dragTargetTrack != kNewTrack)
+        if (const Track *tt = p.findTrack(m_dragTargetTrack))
+            m_dragNewAbove = !isRangeFree(*tt, c->start + delta, c->duration(), m_dragIds);
+    m_insertAt = -1;
+    if (m_dragInsert) {
+        const Track *tt = m_dragTargetTrack.isEmpty() ? src : p.findTrack(m_dragTargetTrack);
+        TimeUs gStart = c->start;
+        for (const QString &id : m_dragIds) {
+            const Track *t2 = nullptr;
+            if (const Clip *dc = p.findClip(id, &t2); dc && t2 == src)
+                gStart = std::min(gStart, dc->start);
+        }
+        if (tt)
+            m_insertAt = insertPoint(*tt, gStart + delta, m_dragIds);
+    }
+    QString msg = QString("Move %1%2").arg(delta >= 0 ? "+" : "-").arg(formatClock(std::llabs(delta)));
+    if (m_dragTargetTrack == kNewTrack)
+        msg += " · to a new track";
+    else if (m_dragInsert)
+        msg += QString(" · insert at %1 (clips after it move later)").arg(formatClock(m_insertAt));
+    else if (m_dragNewAbove)
+        msg += " · that spot is taken, so it goes on a new track";
+    else
+        msg += " · hold Ctrl/⌘ to insert and push clips aside";
+    emit statusMessage(msg);
+}
+
 void TimelineWidget::mouseReleaseEvent(QMouseEvent *e)
 {
     Q_UNUSED(e);
     const Drag d = m_drag;
     m_drag = Drag::None;
     m_snapLine = -1;
+    m_autoScroll->stop();
+    viewport()->unsetCursor();
+    const QString moveTarget = m_dragTargetTrack;
+    const bool moveInsert = m_dragInsert;
+    m_dragLane = 0;
+    m_dragInsert = false;
+    m_insertAt = -1;
+    const int reorderFrom = m_reorderTrack, reorderTo = m_reorderTo;
+    m_reorderTrack = m_reorderTo = -1;
     if (!m_dragMoved || !m_doc->isOpen()) {
         viewport()->update();
         return;
@@ -855,12 +1170,41 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *e)
     case Drag::Move: {
         const QStringList ids = m_dragIds;
         const TimeUs delta = m_dragDelta;
-        const QString target = m_dragTargetTrack;
         const bool linked = m_dragLinked;
-        if (!m_doc->apply("Move clip", [&](Project &p) {
-                return TimelineOps::moveClips(p, ids, delta, clipId, target, linked);
+        const PlaceMode mode = moveInsert ? PlaceMode::Insert : PlaceMode::Auto;
+        if (!m_doc->apply(moveInsert ? "Insert clip" : "Move clip", [&](Project &p) {
+                return TimelineOps::moveClipsPlaced(p, ids, clipId, delta, moveTarget, mode, linked);
             }))
-            emit statusMessage("Clips can't overlap on a track");
+            emit statusMessage("Couldn't move there (locked track?)");
+        else
+            emit statusMessage(moveTarget == kNewTrack ? "Moved to a new track" : moveInsert ? "Inserted" : "Moved");
+        break;
+    }
+    case Drag::TrackReorder: {
+        if (reorderFrom < 0 || reorderTo < 0)
+            break;
+        const QString tid = m_doc->project().tracks[reorderFrom].id;
+        m_doc->apply("Reorder tracks", [&](Project &p) { return TimelineOps::moveTrackTo(p, tid, reorderTo); });
+        break;
+    }
+    case Drag::CueMove: {
+        const QString trackId = m_dragCueTrack;
+        const int cue = m_dragCue;
+        const TimeUs d = m_dragValue;
+        if (d == 0)
+            break;
+        const TimeUs ns = m_cueOrigStart + d;
+        if (!m_doc->apply("Move caption", [&](Project &p) {
+                Track *t = p.findTrack(trackId);
+                Transcript *tr = t ? p.findTranscript(t->transcriptId) : nullptr;
+                if (!tr)
+                    return false;
+                TimeUs s0;
+                if (!CaptionMapper::timelineToTranscript(p, *tr, ns, &s0))
+                    return false;
+                return TranscriptEdit::moveCue(*tr, cue, s0 - tr->cueStart(cue));
+            }))
+            emit statusMessage("The caption can't move there (it would overlap another caption or leave its clip)");
         break;
     }
     case Drag::TrimStart:
@@ -917,6 +1261,75 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *e)
         break;
     }
     m_dragIds.clear();
+    viewport()->update();
+}
+
+void TimelineWidget::keyPressEvent(QKeyEvent *e)
+{
+    if (m_drag != Drag::None && e->key() == Qt::Key_Escape) {
+        m_drag = Drag::None;
+        m_dragMoved = false;
+        m_snapLine = -1;
+        m_dragLane = 0;
+        m_dragInsert = false;
+        m_reorderTrack = m_reorderTo = -1;
+        m_autoScroll->stop();
+        viewport()->unsetCursor();
+        emit statusMessage("Drag cancelled");
+        viewport()->update();
+        return;
+    }
+    if (m_drag == Drag::Move && m_dragMoved && (e->key() == Qt::Key_Control || e->key() == Qt::Key_Meta)) {
+        handleDragMove(m_lastDragPos, e->modifiers());
+        viewport()->update();
+        return;
+    }
+    QAbstractScrollArea::keyPressEvent(e);
+}
+
+void TimelineWidget::keyReleaseEvent(QKeyEvent *e)
+{
+    if (m_drag == Drag::Move && m_dragMoved && (e->key() == Qt::Key_Control || e->key() == Qt::Key_Meta)) {
+        handleDragMove(m_lastDragPos, e->modifiers());
+        viewport()->update();
+        return;
+    }
+    QAbstractScrollArea::keyReleaseEvent(e);
+}
+
+void TimelineWidget::autoScrollStep()
+{
+    if (m_drag == Drag::None && !m_extDrag) {
+        m_autoScroll->stop();
+        return;
+    }
+    const QPoint pos = viewport()->mapFromGlobal(QCursor::pos());
+    const int w = viewport()->width(), h = viewport()->height();
+    auto speed = [](int dist, int zone) { return dist >= zone ? 0 : 4 + (zone - dist) * 24 / zone; };
+    int dx = 0, dy = 0;
+    const int zone = 36;
+    if (pos.x() < headerWidth() + zone && pos.x() > headerWidth() - 60 && m_drag != Drag::TrackReorder)
+        dx = -speed(pos.x() - headerWidth(), zone);
+    else if (pos.x() > w - zone && pos.x() < w + 60 && m_drag != Drag::TrackReorder)
+        dx = speed(w - pos.x(), zone);
+    if (pos.y() < rulerHeight() + 20 && pos.y() > rulerHeight() - 40 && m_drag != Drag::Scrub)
+        dy = -speed(pos.y() - rulerHeight(), 20);
+    else if (pos.y() > h - 20 && pos.y() < h + 40 && m_drag != Drag::Scrub)
+        dy = speed(h - pos.y(), 20);
+    if (!dx && !dy)
+        return;
+    QScrollBar *hs = horizontalScrollBar(), *vs = verticalScrollBar();
+    const int ox = hs->value(), oy = vs->value();
+    if (dx > 0 && hs->value() >= hs->maximum())
+        hs->setMaximum(hs->maximum() + dx); // keep going past the end of the project
+    hs->setValue(hs->value() + dx);
+    vs->setValue(vs->value() + dy);
+    if (hs->value() == ox && vs->value() == oy)
+        return;
+    if (m_extDrag)
+        updateExternalDrag(pos, nullptr, m_lastMods);
+    else if (m_dragMoved)
+        handleDragMove(pos, QApplication::keyboardModifiers());
     viewport()->update();
 }
 
@@ -1209,69 +1622,199 @@ void TimelineWidget::showEmptyMenu(const QPoint &global, TimeUs at, int ti)
 
 // ------------------------------------------------------------------ drag & drop
 
+static QString libraryLabel(const QString &id)
+{
+    if (id.startsWith("sticker:"))
+        return id.mid(8);
+    if (id.startsWith("text:"))
+        return "Text";
+    if (id.startsWith("title-"))
+        return "Title";
+    if (id.startsWith("shape-"))
+        return "Shape";
+    if (id.startsWith("fx:"))
+        return "Effect layer: " + ImageFx::effectLabel(id.mid(3));
+    if (id.startsWith("look:"))
+        return "Filter layer";
+    return id;
+}
+
 void TimelineWidget::dragEnterEvent(QDragEnterEvent *e)
 {
-    if (e->mimeData()->hasFormat(kMediaMime) || e->mimeData()->hasUrls() || e->mimeData()->hasFormat("application/x-shyftr-effect"))
-        e->acceptProposedAction();
+    const QMimeData *md = e->mimeData();
+    if (!m_doc->isOpen() || !(md->hasFormat(kMediaMime) || md->hasUrls() || md->hasFormat("application/x-shyftr-effect")))
+        return;
+    // what will land on the timeline, so we can draw it while dragging
+    m_dropGhost.clear();
+    m_dropLibraryId.clear();
+    const Project &p = m_doc->project();
+    if (md->hasFormat("application/x-shyftr-effect")) {
+        m_dropLibraryId = QString::fromUtf8(md->data("application/x-shyftr-effect"));
+        if (EffectsBrowser::dropKind(m_dropLibraryId) != "target")
+            m_dropGhost << DropGhost{EffectsBrowser::dropDuration(m_dropLibraryId), libraryLabel(m_dropLibraryId), false,
+                                     m_dropLibraryId.startsWith("shape-") ? Theme::clipShape()
+                                     : (m_dropLibraryId.startsWith("fx:") || m_dropLibraryId.startsWith("look:")) ? QColor("#B0458C")
+                                                                                                                  : Theme::clipTitle()};
+    } else if (md->hasFormat(kMediaMime)) {
+        for (const QString &id : QString::fromUtf8(md->data(kMediaMime)).split('\n', Qt::SkipEmptyParts))
+            if (const MediaAsset *m = p.findMedia(id))
+                m_dropGhost << DropGhost{m->kind == MediaKind::Image ? 5 * kUsPerSec : m->duration, m->name,
+                                         m->kind == MediaKind::Audio,
+                                         m->kind == MediaKind::Audio ? Theme::clipAudio()
+                                         : m->kind == MediaKind::Image ? Theme::clipImage() : Theme::clipVideo()};
+    } else {
+        // files from Finder/Explorer: length unknown until imported, show a placeholder per file
+        static const QStringList audioExt{"mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "aif", "aiff"};
+        for (const QUrl &u : md->urls())
+            if (u.isLocalFile()) {
+                const QFileInfo fi(u.toLocalFile());
+                const bool audio = audioExt.contains(fi.suffix().toLower());
+                m_dropGhost << DropGhost{3 * kUsPerSec, fi.fileName(), audio, audio ? Theme::clipAudio() : Theme::clipVideo()};
+            }
+    }
+    m_extDrag = true;
+    m_autoScroll->start();
+    e->acceptProposedAction();
+    updateExternalDrag(e->position().toPoint(), md, e->modifiers());
+}
+
+void TimelineWidget::updateExternalDrag(const QPoint &pos, const QMimeData *mime, Qt::KeyboardModifiers mods)
+{
+    Q_UNUSED(mime);
+    m_lastDragPos = pos;
+    m_lastMods = mods;
+    m_dropTime = snapTime(std::max<TimeUs>(0, timeForX(pos.x())), {}, nullptr);
+    m_dropRow = rowAtY(pos.y());
+    m_dropLane = laneAtY(pos.y());
+    m_dropInsert = (mods & (Qt::ControlModifier | Qt::MetaModifier)) && m_dropLane == 0;
+    m_dropTargetClip.clear();
+    m_insertAt = -1;
+    const Project &p = m_doc->project();
+    QString msg;
+    if (!m_dropLibraryId.isEmpty()) {
+        const QString kind = EffectsBrowser::dropKind(m_dropLibraryId);
+        const Hit h = hitTest(pos);
+        if (kind != "clip" && !h.clipId.isEmpty())
+            m_dropTargetClip = h.clipId;
+        if (m_dropLibraryId.startsWith("tr:"))
+            msg = "Drop near a cut between two clips to add the transition";
+        else if (!m_dropTargetClip.isEmpty())
+            msg = "Release to apply to " + p.findClip(m_dropTargetClip)->name;
+        else if (kind == "target")
+            msg = "Drop this onto a clip";
+        else
+            msg = m_dropLane != 0 ? "Release to add on a new track" : "Release to add at " + formatClock(m_dropTime);
+    }
+    // will it land on a new track because the spot is taken?
+    m_dropNewAbove = false;
+    if (!m_dropInsert && m_dropLane == 0 && m_dropRow >= 0 && !m_dropGhost.isEmpty() && m_dropTargetClip.isEmpty()) {
+        const Track &rt = p.tracks[m_rows[m_dropRow].trackIndex];
+        TimeUs total = 0;
+        for (const DropGhost &g : m_dropGhost)
+            if ((rt.kind == TrackKind::Audio) == g.audio)
+                total += g.duration;
+        m_dropNewAbove = total > 0 && rt.kind != TrackKind::Caption && !isRangeFree(rt, m_dropTime, total);
+    }
+    if (m_dropLibraryId.isEmpty()) {
+        if (m_dropInsert && m_dropRow >= 0)
+            m_insertAt = insertPoint(p.tracks[m_rows[m_dropRow].trackIndex], m_dropTime);
+        msg = m_dropLane != 0 ? "Release to add on a new track"
+              : m_dropInsert ? "Insert at " + formatClock(m_insertAt) + " — clips after it move later"
+                             : "Add at " + formatClock(m_dropTime) + (m_dropNewAbove ? " on a new track (that spot is taken)" : QString())
+                                   + " · hold Ctrl/⌘ to insert and push clips aside";
+    }
+    emit statusMessage(msg);
+    viewport()->update();
 }
 
 void TimelineWidget::dragMoveEvent(QDragMoveEvent *e)
 {
-    m_dropTime = snapTime(std::max<TimeUs>(0, timeForX(e->position().x())), {}, nullptr);
-    m_dropRow = rowAtY(int(e->position().y()));
-    e->acceptProposedAction();
+    updateExternalDrag(e->position().toPoint(), e->mimeData(), e->modifiers());
+    if (!m_dropLibraryId.isEmpty() && EffectsBrowser::dropKind(m_dropLibraryId) == "target" && m_dropTargetClip.isEmpty()
+        && !m_dropLibraryId.startsWith("tr:"))
+        e->ignore(); // shows the "not here" cursor
+    else
+        e->acceptProposedAction();
+}
+
+void TimelineWidget::clearExternalDrag()
+{
+    m_extDrag = false;
+    m_dropTime = -1;
+    m_dropRow = -1;
+    m_dropLane = 0;
+    m_dropInsert = false;
+    m_dropNewAbove = false;
+    m_insertAt = -1;
+    m_dropGhost.clear();
+    m_dropTargetClip.clear();
+    m_dropLibraryId.clear();
+    if (m_drag == Drag::None)
+        m_autoScroll->stop();
     viewport()->update();
+}
+
+void TimelineWidget::dragLeaveEvent(QDragLeaveEvent *e)
+{
+    Q_UNUSED(e);
+    clearExternalDrag();
+    emit statusMessage({});
 }
 
 void TimelineWidget::dropEvent(QDropEvent *e)
 {
+    updateExternalDrag(e->position().toPoint(), e->mimeData(), e->modifiers());
     const TimeUs at = m_dropTime >= 0 ? m_dropTime : 0;
-    const QString trackId = m_dropRow >= 0 ? m_doc->project().tracks[m_rows[m_dropRow].trackIndex].id : QString();
-    m_dropTime = -1;
-    m_dropRow = -1;
-    if (e->mimeData()->hasFormat("application/x-shyftr-effect")) {
-        const QString id = QString::fromUtf8(e->mimeData()->data("application/x-shyftr-effect"));
-        const Hit h = hitTest(e->position().toPoint());
-        QString target = h.clipId;
-        if (id.startsWith("tr:") && h.row >= 0) {
+    const Project &pr = m_doc->project();
+    QString trackId;
+    if (m_dropLane != 0)
+        trackId = kNewTrack;
+    else if (m_dropRow >= 0)
+        trackId = pr.tracks[m_rows[m_dropRow].trackIndex].id;
+    const bool insert = m_dropInsert;
+    const QString targetClip = m_dropTargetClip;
+    const int dropRow = m_dropRow;
+    clearExternalDrag();
+    const QMimeData *md = e->mimeData();
+    if (md->hasFormat("application/x-shyftr-effect")) {
+        const QString id = QString::fromUtf8(md->data("application/x-shyftr-effect"));
+        QString target = targetClip;
+        if (id.startsWith("tr:") && dropRow >= 0) {
             // a transition goes to the clip whose start (the cut) is nearest the drop point
-            const Track &t = m_doc->project().tracks[m_rows[h.row].trackIndex];
-            TimeUs best = TimeUs(0.6 * kUsPerSec);
+            const Track &t = pr.tracks[m_rows[dropRow].trackIndex];
+            TimeUs best = TimeUs(std::max(0.6, 40.0 / m_pxPerSec) * kUsPerSec);
             for (int i = 1; i < t.clips.size(); ++i)
                 if (std::llabs(t.clips[i].start - at) < best) {
                     best = std::llabs(t.clips[i].start - at);
                     target = t.clips[i].id;
                 }
         }
-        emit libraryItemDropped(id, target, at);
+        // a clip made from the item goes on the video track it was dropped on (or a new one)
+        QString clipTrack = trackId;
+        if (const Track *t = pr.findTrack(trackId); t && t->kind != TrackKind::Video)
+            clipTrack.clear();
+        emit libraryItemDropped(id, target.isEmpty() ? QStringLiteral("-") : target, at, clipTrack);
         e->acceptProposedAction();
-        viewport()->update();
         return;
     }
-    if (e->mimeData()->hasFormat(kMediaMime)) {
-        const QStringList ids = QString::fromUtf8(e->mimeData()->data(kMediaMime)).split('\n', Qt::SkipEmptyParts);
-        m_doc->apply("Add to timeline", [&](Project &p) {
-            TimeUs t = at;
-            bool any = false;
-            for (const QString &id : ids) {
-                const QString cid = TimelineOps::addMediaClip(p, id, trackId, t);
-                if (!cid.isEmpty()) {
-                    t = p.findClip(cid)->end();
-                    any = true;
-                }
-            }
-            return any;
+    if (md->hasFormat(kMediaMime)) {
+        const QStringList ids = QString::fromUtf8(md->data(kMediaMime)).split('\n', Qt::SkipEmptyParts);
+        QStringList added;
+        m_doc->apply(insert ? "Insert into timeline" : "Add to timeline", [&](Project &p) {
+            added = TimelineOps::placeMedia(p, ids, trackId, at, insert ? PlaceMode::Insert : PlaceMode::Auto);
+            return !added.isEmpty();
         });
+        if (!added.isEmpty())
+            m_doc->setSelectedClips(added);
         e->acceptProposedAction();
-    } else if (e->mimeData()->hasUrls()) {
+    } else if (md->hasUrls()) {
         QStringList paths;
-        for (const QUrl &u : e->mimeData()->urls())
+        for (const QUrl &u : md->urls())
             if (u.isLocalFile())
                 paths << u.toLocalFile();
-        emit filesDropped(paths, at, trackId);
+        emit filesDropped(paths, at, trackId, insert);
         e->acceptProposedAction();
     }
-    viewport()->update();
 }
 
 bool TimelineWidget::viewportEvent(QEvent *e)
