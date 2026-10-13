@@ -1,5 +1,7 @@
 #include "TimelineOps.h"
 
+#include <QRegularExpression>
+
 #include <QSet>
 #include <algorithm>
 #include <cmath>
@@ -241,6 +243,15 @@ QString addShapeClip(Project &p, const QString &trackId, TimeUs start, TimeUs du
     return addGraphicClip(p, trackId, start, dur, c);
 }
 
+QString addEffectClip(Project &p, const QString &trackId, TimeUs start, TimeUs dur, const ClipFx &fx, const QString &name)
+{
+    Clip c;
+    c.type = ClipType::Effect;
+    c.fx = fx;
+    c.name = name.isEmpty() ? QString("Effect") : name;
+    return addGraphicClip(p, trackId, start, dur, c);
+}
+
 QString insertClipCopy(Project &p, const QString &trackId, Clip c, TimeUs start)
 {
     Track *t = p.findTrack(trackId);
@@ -282,6 +293,13 @@ bool splitClip(Project &p, const QString &clipId, TimeUs t, bool includeLinked)
             const TimeUs srcCut = orig.timelineToSource(t);
             left.out = srcCut;
             right.in = srcCut;
+            if (orig.fx.speedCurve.isSet()) {
+                // each half becomes a constant-speed clip of exactly the same length
+                left.fx.speedCurve = SpeedCurve();
+                right.fx.speedCurve = SpeedCurve();
+                left.speed = std::max(0.05, double(left.out - left.in) / double(std::max<TimeUs>(1, t - orig.start)));
+                right.speed = std::max(0.05, double(right.out - right.in) / double(std::max<TimeUs>(1, orig.end() - t)));
+            }
         } else {
             left.in = 0;
             left.out = t - orig.start;
@@ -295,6 +313,57 @@ bool splitClip(Project &p, const QString &clipId, TimeUs t, bool includeLinked)
         right.fadeIn = 0;
         right.audio.fadeIn = 0;
         right.linkId = newLink;
+        right.fx.transitionIn = TransitionSpec(); // a cut inside a clip is not a transition
+        if (!orig.fx.keyframes.isEmpty()) {
+            // keep the motion identical across the cut: both halves get a key at the cut, and an
+            // eased segment that the cut divides is replaced by a dense linear approximation
+            QVector<Keyframe> keys = orig.fx.keyframes;
+            const TimeUs cutLocal = t - orig.start;
+            for (int k = 0; k + 1 < keys.size(); ++k) {
+                if (keys[k].t < cutLocal && cutLocal < keys[k + 1].t && keys[k].ease != "linear" && keys[k].ease != "hold") {
+                    QVector<Keyframe> dense;
+                    const int n = 12;
+                    for (int j = 0; j <= n; ++j) {
+                        const TimeUs tt = keys[k].t + (keys[k + 1].t - keys[k].t) * j / n;
+                        const AnimatedValues v = Keyframes::evaluate(orig.fx.keyframes, tt);
+                        dense << Keyframe{tt, v.x, v.y, v.scale, v.rotation, v.opacity, "linear"};
+                    }
+                    dense.last().ease = keys[k + 1].ease;
+                    keys = keys.mid(0, k) + dense + keys.mid(k + 2);
+                    break;
+                }
+            }
+            Keyframe atCut;
+            const AnimatedValues v = Keyframes::evaluate(keys, cutLocal);
+            atCut.x = v.x;
+            atCut.y = v.y;
+            atCut.scale = v.scale;
+            atCut.rotation = v.rotation;
+            atCut.opacity = v.opacity;
+            QVector<Keyframe> lk, rk;
+            QString segEase = "linear"; // the curve of the segment the cut falls in
+            for (const Keyframe &k : keys) {
+                if (k.t < cutLocal) {
+                    lk << k;
+                    segEase = k.ease;
+                } else if (k.t > cutLocal) {
+                    Keyframe kk = k;
+                    kk.t -= cutLocal;
+                    rk << kk;
+                } else {
+                    segEase = k.ease;
+                }
+            }
+            Keyframe l = atCut;
+            l.t = cutLocal;
+            lk << l;
+            Keyframe r = atCut;
+            r.t = 0;
+            r.ease = segEase;
+            rk.prepend(r);
+            left.fx.keyframes = lk;
+            right.fx.keyframes = rk;
+        }
         // keep the original link group for the left halves
         tr->clips[idx] = left;
         tr->clips.append(right);
@@ -333,6 +402,14 @@ TimeUs trimClip(Project &p, const QString &clipId, Edge edge, TimeUs newTime, bo
     const TimeUs current = edge == Edge::Start ? primary->start : primary->end();
     TimeUs delta = newTime - current;
     const QStringList ids = expandLinked(p, {clipId}, includeLinked);
+    // A speed curve is defined over the whole clip; trimming turns it into the equivalent
+    // constant speed first so the remaining frames do not jump.
+    for (const QString &id : ids)
+        if (Clip *c = p.findClip(id); c && c->fx.speedCurve.isSet()) {
+            const TimeUs d = std::max<TimeUs>(1, c->duration());
+            c->fx.speedCurve = SpeedCurve();
+            c->speed = std::max(0.05, double(c->out - c->in) / double(d));
+        }
 
     // Compute the allowed delta range across all affected clips.
     TimeUs lo = std::numeric_limits<TimeUs>::min() / 4, hi = std::numeric_limits<TimeUs>::max() / 4;
@@ -376,6 +453,8 @@ TimeUs trimClip(Project &p, const QString &clipId, Edge edge, TimeUs newTime, bo
         if (edge == Edge::Start) {
             c->start += delta;
             c->in += srcDelta;
+            for (Keyframe &k : c->fx.keyframes) // keyframes stay attached to the picture
+                k.t -= delta;
             if (c->type != ClipType::Media) {
                 c->in = 0;
                 c->out -= delta;
@@ -601,6 +680,8 @@ QVector<TimeUs> snapPoints(const Project &p, const QStringList &exclude)
         pts << p.inPoint;
     if (p.outPoint >= 0)
         pts << p.outPoint;
+    for (const Marker &m : p.markers) // beat markers make cutting to music easy
+        pts << m.t;
     for (const auto &t : p.tracks)
         for (const auto &c : t.clips)
             if (!exclude.contains(c.id))
@@ -659,6 +740,138 @@ QVector<const Clip *> activeAudioClips(const Project &p, TimeUs t)
         }
     }
     return out;
+}
+
+} // namespace TimelineOps
+} // namespace ss
+
+namespace ss {
+namespace TimelineOps {
+
+int removeSourceRanges(Project &p, const QString &clipId, QVector<QPair<TimeUs, TimeUs>> ranges)
+{
+    std::sort(ranges.begin(), ranges.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+    int removed = 0;
+    for (const auto &r : ranges) {
+        Track *tr = nullptr;
+        Clip *c = p.findClip(clipId, &tr);
+        if (!c || tr->locked)
+            break;
+        const TimeUs a = std::max(r.first, c->in), b = std::min(r.second, c->out);
+        if (b - a < 40 * kUsPerMs)
+            continue;
+        const TimeUs tA = snapToFrame(c->sourceToTimeline(a), p.canvas.fps);
+        const TimeUs tB = snapToFrame(c->sourceToTimeline(b), p.canvas.fps);
+        if (tB - tA < frameDurationUs(p.canvas.fps))
+            continue;
+        const QString trackId = tr->id;
+        const TimeUs cEnd = c->end(), cStart = c->start;
+        if (tB < cEnd - frameDurationUs(p.canvas.fps))
+            splitClip(p, clipId, tB, true);
+        QString middle = clipId;
+        if (tA > cStart + frameDurationUs(p.canvas.fps)) {
+            if (!splitClip(p, clipId, tA, true))
+                continue;
+            const Track *t2 = p.findTrack(trackId);
+            middle.clear();
+            for (const Clip &cl : t2->clips)
+                if (cl.start == tA)
+                    middle = cl.id;
+        }
+        if (middle.isEmpty())
+            continue;
+        if (middle == clipId) {
+            // the range starts the clip: nothing earlier remains to process
+            deleteClips(p, {middle}, true, true);
+            ++removed;
+            break;
+        }
+        if (deleteClips(p, {middle}, true, true))
+            ++removed;
+    }
+    return removed;
+}
+
+QStringList defaultFillerWords()
+{
+    return {"um", "umm", "uh", "uhh", "uhm", "erm", "er", "ah", "ahh", "hmm", "mm", "mhm"};
+}
+
+QVector<QPair<TimeUs, TimeUs>> fillerWordRanges(const Transcript &t, const QStringList &fillers, TimeUs padding)
+{
+    QVector<QPair<TimeUs, TimeUs>> out;
+    for (int i = 0; i < t.words.size(); ++i) {
+        QString w = t.words[i].text.toLower();
+        w.remove(QRegularExpression("[^\\p{L}\\p{N}]"));
+        if (w.isEmpty() || !fillers.contains(w))
+            continue;
+        TimeUs a = t.words[i].start - padding, b = t.words[i].end + padding;
+        // never eat into the neighbouring words
+        if (i > 0)
+            a = std::max(a, t.words[i - 1].end);
+        if (i + 1 < t.words.size())
+            b = std::min(b, t.words[i + 1].start);
+        if (!out.isEmpty() && a <= out.last().second)
+            out.last().second = std::max(out.last().second, b);
+        else if (b > a)
+            out << qMakePair(a, b);
+    }
+    return out;
+}
+
+QString insertFreezeFrame(Project &p, const QString &clipId, TimeUs t, const QString &imageMediaId, TimeUs duration)
+{
+    Track *tr = nullptr;
+    Clip *c = p.findClip(clipId, &tr);
+    if (!c || tr->locked || !p.findMedia(imageMediaId))
+        return {};
+    t = snapToFrame(t, p.canvas.fps);
+    duration = snapToFrame(duration, p.canvas.fps);
+    const QString trackId = tr->id;
+    // the still looks exactly like the frame it freezes (animated framing, colour, effects)
+    const Clip frozen = c->animatedAt(std::clamp(t, c->start, c->end() - 1));
+    if (t > c->start && t < c->end())
+        splitClip(p, clipId, t, true);
+    // tracks to open a gap on: the clip's own track and the tracks of its linked partners
+    QSet<QString> tracks{trackId};
+    for (Clip *l : p.linkedClips(clipId)) {
+        Track *lt = nullptr;
+        p.findClip(l->id, &lt);
+        if (lt)
+            tracks.insert(lt->id);
+    }
+    for (const QString &tid : tracks)
+        if (const Track *t3 = p.findTrack(tid); !t3 || t3->locked)
+            return {};
+    // ripple every clip at/after t on those tracks, so nothing can collide
+    for (auto &trk : p.tracks)
+        if (tracks.contains(trk.id)) {
+            for (auto &cl : trk.clips)
+                if (cl.start >= t)
+                    cl.start += duration;
+            trk.sortClips();
+        }
+    Track *t2 = p.findTrack(trackId);
+    if (!isRangeFree(*t2, t, duration))
+        return {};
+    Clip still;
+    still.id = newId();
+    still.type = ClipType::Media;
+    still.mediaId = imageMediaId;
+    still.name = "Freeze frame";
+    still.start = t;
+    still.in = 0;
+    still.out = duration;
+    still.transform = frozen.transform;
+    still.color = frozen.color;
+    still.fx = frozen.fx;
+    still.fx.keyframes.clear();
+    still.fx.transitionIn = TransitionSpec();
+    still.fx.speedCurve = SpeedCurve();
+    still.fx.audio = AudioFx();
+    t2->clips.append(still);
+    t2->sortClips();
+    return still.id;
 }
 
 } // namespace TimelineOps

@@ -88,6 +88,7 @@ struct TranscriptionRequest {
     int threads = 0;
     bool useGpu = true;
     bool refineTiming = true;
+    bool translateToEnglish = false; // whisper's built-in translation (any language -> English)
     QString workDir;
     CaptionStyle styleForSegmentation;
 };

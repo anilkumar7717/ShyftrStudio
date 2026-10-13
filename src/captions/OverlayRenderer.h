@@ -33,6 +33,9 @@ public:
     static QRectF titleRect(const QSize &frame, const Clip &clip);
     static QRectF shapeRect(const QSize &frame, const Clip &clip);
     static QFont titleFont(const TitleProps &tp, int frameHeight);
+    static QStringList titleInAnimations();
+    static QStringList titleOutAnimations();
+    static QStringList titleLoopAnimations();
 };
 
 // A self-contained snapshot of everything drawn above the video layers: titles, shapes
@@ -54,6 +57,7 @@ public:
     bool isEmptyAt(TimeUs t) const;
     bool isEmpty() const;
     void render(QPainter &p, const QSize &frame, TimeUs t) const;
+    void renderCaptions(QPainter &p, const QSize &frame, TimeUs t) const;
     QImage renderImage(const QSize &frame, TimeUs t) const; // transparent ARGB32_Premultiplied
 
     QVector<CaptionLayer> captions;

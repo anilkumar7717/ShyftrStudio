@@ -157,9 +157,20 @@ QJsonObject ProjectSerializer::clipToJson(const Clip &c)
         to["y"] = t.y;
         to["align"] = t.align;
         to["animation"] = t.animation;
+        to["animationOut"] = t.animationOut;
+        if (!t.loop.isEmpty())
+            to["loop"] = t.loop;
         to["animationDuration"] = t.animationDuration;
+        to["shadowColor"] = colorToString(t.shadowColor);
+        to["shadowOffsetPct"] = t.shadowOffsetPct;
+        to["gradientColor"] = colorToString(t.gradientColor);
+        to["letterSpacingPct"] = t.letterSpacingPct;
+        to["boxPaddingPct"] = t.boxPaddingPct;
+        to["boxRadiusPct"] = t.boxRadiusPct;
         o["title"] = to;
     }
+    if (!c.fx.isDefault())
+        o["fx"] = c.fx.toJson();
     if (c.type == ClipType::Shape) {
         const ShapeProps &s = c.shape;
         QJsonObject so;
@@ -236,7 +247,15 @@ Clip ProjectSerializer::clipFromJson(const QJsonObject &o)
         t.y = D(to, "y", 0.5);
         t.align = S(to, "align", "center");
         t.animation = S(to, "animation", "fade");
+        t.animationOut = S(to, "animationOut", "auto");
+        t.loop = S(to, "loop");
         t.animationDuration = I(to, "animationDuration", t.animationDuration);
+        t.shadowColor = colorFromString(S(to, "shadowColor"), t.shadowColor);
+        t.shadowOffsetPct = D(to, "shadowOffsetPct", t.shadowOffsetPct);
+        t.gradientColor = colorFromString(S(to, "gradientColor"), t.gradientColor);
+        t.letterSpacingPct = D(to, "letterSpacingPct");
+        t.boxPaddingPct = D(to, "boxPaddingPct", t.boxPaddingPct);
+        t.boxRadiusPct = D(to, "boxRadiusPct", t.boxRadiusPct);
         c.title = t;
     }
     if (o.contains("shape")) {
@@ -253,6 +272,8 @@ Clip ProjectSerializer::clipFromJson(const QJsonObject &o)
         s.radiusPct = D(so, "radiusPct");
         c.shape = s;
     }
+    if (o.contains("fx"))
+        c.fx = ClipFx::fromJson(o.value("fx").toObject());
     return c;
 }
 
@@ -367,6 +388,8 @@ QJsonObject ProjectSerializer::toJson(const Project &p)
             to["styleOverrides"] = t.styleOverrides;
             to["burnIn"] = t.burnIn;
         }
+        if (t.kind == TrackKind::Audio && t.duck)
+            to["duck"] = true;
         QJsonArray clips;
         for (const auto &c : t.clips)
             clips.append(clipToJson(c));
@@ -393,6 +416,12 @@ QJsonObject ProjectSerializer::toJson(const Project &p)
     root["playhead"] = p.playhead;
     root["inPoint"] = p.inPoint;
     root["outPoint"] = p.outPoint;
+    if (!p.markers.isEmpty()) {
+        QJsonArray markers;
+        for (const Marker &m : p.markers)
+            markers.append(QJsonObject{{"t", m.t}, {"label", m.label}, {"color", colorToString(m.color)}});
+        root["markers"] = markers;
+    }
     root["uiMode"] = p.uiMode;
     root["exportSettings"] = p.exportSettings;
     return root;
@@ -537,6 +566,7 @@ bool ProjectSerializer::fromJson(const QJsonObject &rootIn, Project &p, QString 
         t.styleId = S(to, "styleId", t.styleId);
         t.styleOverrides = to.value("styleOverrides").toObject();
         t.burnIn = B(to, "burnIn", true);
+        t.duck = B(to, "duck");
         for (const QJsonValue &cv : to.value("clips").toArray())
             t.clips.append(clipFromJson(cv.toObject()));
         t.sortClips();
@@ -558,6 +588,14 @@ bool ProjectSerializer::fromJson(const QJsonObject &rootIn, Project &p, QString 
     p.playhead = I(root, "playhead");
     p.inPoint = I(root, "inPoint", -1);
     p.outPoint = I(root, "outPoint", -1);
+    for (const QJsonValue &v : root.value("markers").toArray()) {
+        const QJsonObject mo = v.toObject();
+        Marker m;
+        m.t = I(mo, "t");
+        m.label = S(mo, "label");
+        m.color = colorFromString(S(mo, "color"), m.color);
+        p.markers.append(m);
+    }
     p.uiMode = S(root, "uiMode", "quick");
     p.exportSettings = root.value("exportSettings").toObject();
 

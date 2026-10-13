@@ -24,6 +24,8 @@ QString addMediaClip(Project &p, const QString &mediaId, const QString &trackId,
                      bool withLinkedAudio = true, TimeUs imageDuration = 5 * kUsPerSec);
 QString addTitleClip(Project &p, const QString &trackId, TimeUs start, TimeUs dur, const TitleProps &props);
 QString addShapeClip(Project &p, const QString &trackId, TimeUs start, TimeUs dur, const ShapeProps &props);
+// Adjustment layer: its effects/filters apply to everything on the tracks below it.
+QString addEffectClip(Project &p, const QString &trackId, TimeUs start, TimeUs dur, const ClipFx &fx, const QString &name = {});
 // Inserts a clip copy (used by paste / duplicate). Picks next free position.
 QString insertClipCopy(Project &p, const QString &trackId, Clip c, TimeUs start);
 
@@ -49,6 +51,16 @@ bool unlinkClips(Project &p, const QStringList &clipIds);
 bool linkClips(Project &p, const QStringList &clipIds);
 
 bool setClipSpeed(Project &p, const QString &clipId, double speed, bool includeLinked = true);
+
+// Cuts the given source-time ranges out of a clip (and its linked clips) and closes the
+// gaps (ripple). Used by "remove silences" and "remove filler words". Returns ranges removed.
+int removeSourceRanges(Project &p, const QString &clipId, QVector<QPair<TimeUs, TimeUs>> ranges);
+// Source-time ranges of filler words ("um", "uh"...) in a transcript, padded slightly.
+QVector<QPair<TimeUs, TimeUs>> fillerWordRanges(const Transcript &t, const QStringList &fillers, TimeUs padding = 30 * kUsPerMs);
+QStringList defaultFillerWords();
+// Inserts a still (image media) of `duration` at timeline time t on the clip's track,
+// pushing the rest of that track (and linked audio) later. Returns the new clip id.
+QString insertFreezeFrame(Project &p, const QString &clipId, TimeUs t, const QString &imageMediaId, TimeUs duration);
 
 // Snap candidates (clip edges, playhead, in/out marks), excluding the given clips.
 QVector<TimeUs> snapPoints(const Project &p, const QStringList &exclude = {});

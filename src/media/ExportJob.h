@@ -16,6 +16,7 @@ struct ExportRequest {
     OverlayScene overlay;     // built on the GUI thread
     QString srtText;          // optional sidecars (already range-mapped)
     QString vttText;
+    bool forceCompositor = false; // otherwise chosen automatically (Compositor::projectNeedsCompositor)
 };
 
 // Runs FFmpeg in a worker thread, streaming rendered overlay frames into its stdin.

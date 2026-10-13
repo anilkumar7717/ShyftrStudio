@@ -53,6 +53,8 @@ private:
     QComboBox *m_audioBitrate;
     QComboBox *m_range;
     QCheckBox *m_burn;
+    QCheckBox *m_loud = nullptr;
+    QComboBox *m_format = nullptr;
     QCheckBox *m_srt;
     QCheckBox *m_vtt;
     QLineEdit *m_path;

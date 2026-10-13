@@ -27,6 +27,8 @@ signals:
     void addMusicRequested();
     void exportRequested(const QString &presetId);
     void editCaptionsRequested();
+    void libraryRequested(const QString &category);
+    void toolRequested(const QString &tool);
     void statusMessage(const QString &msg);
 
 private:

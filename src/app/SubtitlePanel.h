@@ -80,6 +80,7 @@ private:
     QComboBox *m_model;
     QComboBox *m_vadModel;
     QLineEdit *m_vocab;
+    QCheckBox *m_translate = nullptr;
     QCheckBox *m_refine;
     QPushButton *m_generate;
     QPushButton *m_cancel;

@@ -3,6 +3,7 @@
 #include "ExportGraph.h"
 
 #include <algorithm>
+#include <functional>
 #include <cmath>
 
 namespace ss {
@@ -80,13 +81,14 @@ QVector<Item> itemsAt(const Project &p, const OverlayScene &scene, TimeUs t)
         const Track *tr = trackOfClip(p, c.id);
         it.trackId = tr ? tr->id : QString();
         it.locked = tr && tr->locked;
+        const Clip a = c.animatedAt(t);
         if (c.type == ClipType::Title) {
             it.kind = Item::Title;
-            it.rect = GraphicsRenderer::titleRect(frame, c);
+            it.rect = GraphicsRenderer::titleRect(frame, a);
             it.label = "Title “" + shortText(c.title.text) + "”";
         } else {
             it.kind = Item::Shape;
-            it.rect = GraphicsRenderer::shapeRect(frame, c);
+            it.rect = GraphicsRenderer::shapeRect(frame, a);
             it.label = "Shape";
         }
         out << it;
@@ -100,7 +102,7 @@ QVector<Item> itemsAt(const Project &p, const OverlayScene &scene, TimeUs t)
         const Track *tr = trackOfClip(p, c->id);
         it.trackId = tr ? tr->id : QString();
         it.locked = tr && tr->locked;
-        it.rect = mediaRect(p, *c);
+        it.rect = mediaRect(p, c->animatedAt(t));
         it.label = c->name.isEmpty() ? QString("Video") : c->name;
         if (it.rect.isValid())
             out << it;
@@ -128,9 +130,13 @@ Grab grab(const Project &p, const Item &item, bool perCue)
         g.size = s.sizePct;
         return g;
     }
-    const Clip *c = p.findClip(item.clipId);
-    if (!c)
+    const Clip *orig = p.findClip(item.clipId);
+    if (!orig)
         return g;
+    g.localT = p.playhead - orig->start;
+    const Clip animated = orig->animatedAt(p.playhead);
+    const Clip *c = &animated;
+    g.scale = c->transform.scale;
     if (item.kind == Item::Title) {
         g.x = c->title.x;
         g.y = c->title.y;
@@ -146,6 +152,40 @@ Grab grab(const Project &p, const Item &item, bool perCue)
         g.size = c->transform.scale;
     }
     return g;
+}
+
+// Writes position/scale either to the clip's static values or, when the clip is
+// keyframed, to the keyframe at the playhead (creating it if needed).
+static void writeAnimated(Clip &c, TimeUs localT, const std::function<void(AnimatedValues &)> &fn)
+{
+    if (c.fx.keyframes.isEmpty()) {
+        AnimatedValues v = c.baseValues();
+        fn(v);
+        c.setBaseValues(v);
+        return;
+    }
+    int idx = Keyframes::indexAt(c.fx.keyframes, localT, 20 * kUsPerMs);
+    if (idx < 0) {
+        const AnimatedValues v = Keyframes::evaluate(c.fx.keyframes, localT);
+        Keyframe k;
+        k.t = localT;
+        k.x = v.x;
+        k.y = v.y;
+        k.scale = v.scale;
+        k.rotation = v.rotation;
+        k.opacity = v.opacity;
+        c.fx.keyframes << k;
+        Keyframes::sort(c.fx.keyframes);
+        idx = Keyframes::indexAt(c.fx.keyframes, localT, 0);
+    }
+    Keyframe &k = c.fx.keyframes[idx];
+    AnimatedValues v{k.x, k.y, k.scale, k.rotation, k.opacity};
+    fn(v);
+    k.x = v.x;
+    k.y = v.y;
+    k.scale = v.scale;
+    k.rotation = v.rotation;
+    k.opacity = v.opacity;
 }
 
 static void setCaptionValue(Project &p, const Grab &g, const char *key, double v)
@@ -169,28 +209,17 @@ bool move(Project &p, const Grab &g, const QPointF &delta)
         setCaptionValue(p, g, "offsetXPct", std::clamp(g.x + fx, -0.5, 0.5));
         setCaptionValue(p, g, "offsetYPct", std::clamp(g.y - fy, -0.9, 0.9)); // + = up
         return true;
-    case Item::Title: {
-        Clip *c = p.findClip(g.item.clipId);
-        if (!c)
-            return false;
-        c->title.x = std::clamp(g.x + fx, 0.0, 1.0);
-        c->title.y = std::clamp(g.y + fy, 0.0, 1.0);
-        return true;
-    }
-    case Item::Shape: {
-        Clip *c = p.findClip(g.item.clipId);
-        if (!c)
-            return false;
-        c->shape.x = std::clamp(g.x + fx, 0.0, 1.0);
-        c->shape.y = std::clamp(g.y + fy, 0.0, 1.0);
-        return true;
-    }
+    case Item::Title:
+    case Item::Shape:
     case Item::Media: {
         Clip *c = p.findClip(g.item.clipId);
         if (!c)
             return false;
-        c->transform.posX = std::clamp(g.x + fx, -1.5, 1.5);
-        c->transform.posY = std::clamp(g.y + fy, -1.5, 1.5);
+        const bool media = g.item.kind == Item::Media;
+        writeAnimated(*c, g.localT, [&](AnimatedValues &v) {
+            v.x = media ? std::clamp(g.x + fx, -1.5, 1.5) : std::clamp(g.x + fx, 0.0, 1.0);
+            v.y = media ? std::clamp(g.y + fy, -1.5, 1.5) : std::clamp(g.y + fy, 0.0, 1.0);
+        });
         return true;
     }
     }
@@ -211,22 +240,29 @@ bool scale(Project &p, const Grab &g, double factor)
         Clip *c = p.findClip(g.item.clipId);
         if (!c)
             return false;
-        c->title.sizePct = std::clamp(g.size * factor, 0.01, 0.4);
+        if (c->fx.keyframes.isEmpty())
+            c->title.sizePct = std::clamp(g.size * factor, 0.01, 0.4);
+        else
+            writeAnimated(*c, g.localT, [&](AnimatedValues &v) { v.scale = std::clamp(g.scale * factor, 0.05, 20.0); });
         return true;
     }
     case Item::Shape: {
         Clip *c = p.findClip(g.item.clipId);
         if (!c)
             return false;
-        c->shape.w = std::clamp(g.w * factor, 0.005, 2.0);
-        c->shape.h = std::clamp(g.h * factor, 0.002, 2.0);
+        if (c->fx.keyframes.isEmpty()) {
+            c->shape.w = std::clamp(g.w * factor, 0.005, 2.0);
+            c->shape.h = std::clamp(g.h * factor, 0.002, 2.0);
+        } else {
+            writeAnimated(*c, g.localT, [&](AnimatedValues &v) { v.scale = std::clamp(g.scale * factor, 0.05, 20.0); });
+        }
         return true;
     }
     case Item::Media: {
         Clip *c = p.findClip(g.item.clipId);
         if (!c)
             return false;
-        c->transform.scale = std::clamp(g.size * factor, 0.05, 10.0);
+        writeAnimated(*c, g.localT, [&](AnimatedValues &v) { v.scale = std::clamp(g.size * factor, 0.05, 10.0); });
         return true;
     }
     }
@@ -240,10 +276,13 @@ bool setShapeRect(Project &p, const Grab &g, const QRectF &rIn)
         return false;
     const double W = std::max(1, p.canvas.width), H = std::max(1, p.canvas.height);
     const QRectF r = rIn.normalized();
-    c->shape.x = std::clamp(r.center().x() / W, 0.0, 1.0);
-    c->shape.y = std::clamp(r.center().y() / H, 0.0, 1.0);
-    c->shape.w = std::clamp(r.width() / W, 0.005, 2.0);
-    c->shape.h = std::clamp(r.height() / H, 0.002, 2.0);
+    const double k = std::max(0.01, g.scale); // the box drawn on screen includes the (animated) scale
+    c->shape.w = std::clamp(r.width() / W / k, 0.005, 2.0);
+    c->shape.h = std::clamp(r.height() / H / k, 0.002, 2.0);
+    writeAnimated(*c, g.localT, [&](AnimatedValues &v) {
+        v.x = std::clamp(r.center().x() / W, 0.0, 1.0);
+        v.y = std::clamp(r.center().y() / H, 0.0, 1.0);
+    });
     return true;
 }
 
@@ -266,23 +305,17 @@ bool resetPosition(Project &p, const Item &item)
         return changed;
     }
     case Item::Title:
-        if (Clip *c = p.findClip(item.clipId)) {
-            c->title.x = 0.5;
-            c->title.y = 0.5;
-            return true;
-        }
-        return false;
     case Item::Shape:
-        if (Clip *c = p.findClip(item.clipId)) {
-            c->shape.x = 0.5;
-            c->shape.y = 0.5;
-            return true;
-        }
-        return false;
     case Item::Media:
         if (Clip *c = p.findClip(item.clipId)) {
-            c->transform.posX = 0;
-            c->transform.posY = 0;
+            const double home = item.kind == Item::Media ? 0.0 : 0.5;
+            AnimatedValues v = c->baseValues();
+            v.x = v.y = home;
+            c->setBaseValues(v);
+            for (Keyframe &k : c->fx.keyframes) { // keyframed: re-centre every key
+                k.x = home;
+                k.y = home;
+            }
             return true;
         }
         return false;
@@ -308,6 +341,9 @@ bool resetSize(Project &p, const Item &item)
     case Item::Title:
         if (Clip *c = p.findClip(item.clipId)) {
             c->title.sizePct = TitleProps().sizePct;
+            c->transform.scale = 1.0;
+            for (Keyframe &k : c->fx.keyframes)
+                k.scale = 1.0;
             return true;
         }
         return false;
@@ -316,6 +352,8 @@ bool resetSize(Project &p, const Item &item)
     case Item::Media:
         if (Clip *c = p.findClip(item.clipId)) {
             c->transform.scale = 1.0;
+            for (Keyframe &k : c->fx.keyframes)
+                k.scale = 1.0;
             return true;
         }
         return false;

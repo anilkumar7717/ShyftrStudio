@@ -602,7 +602,9 @@ void TranscriptionJob::runWhisper()
     args << "-t" << QString::number(threads);
     if (!m_req.useGpu)
         args << "-ng";
-    QString prompt = lang.prompt;
+    if (m_req.translateToEnglish)
+        args << "-tr";
+    QString prompt = m_req.translateToEnglish ? QString() : lang.prompt;
     if (!m_req.extraPrompt.trimmed().isEmpty())
         prompt = (prompt + " " + m_req.extraPrompt.trimmed()).trimmed();
     if (!prompt.isEmpty())

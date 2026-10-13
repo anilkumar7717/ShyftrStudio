@@ -29,6 +29,7 @@ signals:
     void clipActivated(const QString &clipId);       // double-click
     void cueActivated(const QString &trackId, int cue);
     void filesDropped(const QStringList &paths, ss::TimeUs at, const QString &trackId);
+    void libraryItemDropped(const QString &itemId, const QString &clipId, ss::TimeUs at);
     void statusMessage(const QString &msg);
 
 protected:

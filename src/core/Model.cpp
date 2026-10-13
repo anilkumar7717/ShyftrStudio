@@ -131,6 +131,7 @@ QString toString(ClipType k)
     case ClipType::Media: return "media";
     case ClipType::Title: return "title";
     case ClipType::Shape: return "shape";
+    case ClipType::Effect: return "effect";
     }
     return "media";
 }
@@ -153,6 +154,7 @@ ClipType clipTypeFromString(const QString &s)
 {
     if (s == "title") return ClipType::Title;
     if (s == "shape") return ClipType::Shape;
+    if (s == "effect") return ClipType::Effect;
     return ClipType::Media;
 }
 TrackKind trackKindFromString(const QString &s)
@@ -182,13 +184,66 @@ TimeUs Clip::duration() const
 TimeUs Clip::sourceToTimeline(TimeUs src) const
 {
     const double s = speed > 0 ? speed : 1.0;
+    if (fx.speedCurve.isSet() && out > in && src >= in && src <= out) {
+        const TimeUs d = duration();
+        return start + TimeUs(std::llround(fx.speedCurve.timelineFraction(double(src - in) / double(out - in)) * d));
+    }
     return start + TimeUs(std::llround(double(src - in) / s));
 }
 
 TimeUs Clip::timelineToSource(TimeUs t) const
 {
     const double s = speed > 0 ? speed : 1.0;
+    if (fx.speedCurve.isSet() && t >= start && t <= end()) {
+        const TimeUs d = std::max<TimeUs>(1, duration());
+        return in + TimeUs(std::llround(fx.speedCurve.sourceFraction(double(t - start) / double(d)) * double(out - in)));
+    }
     return in + TimeUs(std::llround(double(t - start) * s));
+}
+
+AnimatedValues Clip::baseValues() const
+{
+    AnimatedValues v;
+    v.scale = transform.scale;
+    v.rotation = transform.rotation;
+    v.opacity = transform.opacity;
+    if (type == ClipType::Title) {
+        v.x = title.x;
+        v.y = title.y;
+    } else if (type == ClipType::Shape) {
+        v.x = shape.x;
+        v.y = shape.y;
+    } else {
+        v.x = transform.posX;
+        v.y = transform.posY;
+    }
+    return v;
+}
+
+void Clip::setBaseValues(const AnimatedValues &v)
+{
+    transform.scale = v.scale;
+    transform.rotation = v.rotation;
+    transform.opacity = std::clamp(v.opacity, 0.0, 1.0);
+    if (type == ClipType::Title) {
+        title.x = v.x;
+        title.y = v.y;
+    } else if (type == ClipType::Shape) {
+        shape.x = v.x;
+        shape.y = v.y;
+    } else {
+        transform.posX = v.x;
+        transform.posY = v.y;
+    }
+}
+
+Clip Clip::animatedAt(TimeUs t) const
+{
+    if (fx.keyframes.isEmpty())
+        return *this;
+    Clip c = *this;
+    c.setBaseValues(Keyframes::evaluate(fx.keyframes, t - start));
+    return c;
 }
 
 void Track::sortClips()

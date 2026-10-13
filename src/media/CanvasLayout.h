@@ -41,6 +41,8 @@ struct Grab {
     double x = 0, y = 0;  // title/shape centre (fraction), media posX/posY, caption offsetX/offsetY
     double w = 0, h = 0;  // shape size (fraction)
     double size = 0;      // title sizePct, caption sizePct, media scale
+    double scale = 1;     // transform scale (keyframed titles/shapes)
+    TimeUs localT = 0;    // playhead relative to the clip start (keyframe editing)
 };
 Grab grab(const Project &p, const Item &item, bool perCue);
 

@@ -27,6 +27,7 @@ class EffectsBrowser;
 class QuickPanel;
 class ExportDialog;
 class PreferencesDialog;
+class ToolsController;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -107,6 +108,7 @@ private:
     QDockWidget *m_effectsDock = nullptr;
     QDockWidget *m_timelineDock = nullptr;
     QDockWidget *m_quickDock = nullptr;
+    ToolsController *m_tools = nullptr;
     QPointer<ExportDialog> m_exportDialog;
     QLockFile *m_lock = nullptr;
     QTimer m_autosave;

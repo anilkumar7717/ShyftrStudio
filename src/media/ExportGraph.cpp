@@ -28,6 +28,7 @@ QJsonObject ExportSettings::toJson() const
     o["burnCaptions"] = burnCaptions;
     o["writeSrt"] = writeSrt;
     o["writeVtt"] = writeVtt;
+    o["normalizeLoudness"] = normalizeLoudness;
     o["lastOutputDir"] = QFileInfo(outputPath).absolutePath();
     return o;
 }
@@ -49,6 +50,7 @@ ExportSettings ExportSettings::fromJson(const QJsonObject &o)
     s.burnCaptions = o.value("burnCaptions").toBool(true);
     s.writeSrt = o.value("writeSrt").toBool(false);
     s.writeVtt = o.value("writeVtt").toBool(false);
+    s.normalizeLoudness = o.value("normalizeLoudness").toBool(false);
     return s;
 }
 
@@ -196,10 +198,22 @@ static QString secs(TimeUs t)
 
 // ------------------------------------------------------------------ build
 
+bool ExportGraph::isAudioOnlyPath(const QString &path)
+{
+    const QString ext = QFileInfo(path).suffix().toLower();
+    return ext == "mp3" || ext == "wav" || ext == "m4a" || ext == "aac" || ext == "flac";
+}
+
 ExportPlan ExportGraph::build(const Project &p, const ExportSettings &s, bool needsOverlay, int ffmpegMajor,
-                              const QStringList &availableEncoders, const QString &scriptPath)
+                              const QStringList &availableEncoders, const QString &scriptPath, bool compositorVideo)
 {
     ExportPlan plan;
+    plan.audioOnly = isAudioOnlyPath(s.outputPath);
+    if (plan.audioOnly) {
+        compositorVideo = false;
+        needsOverlay = false;
+    }
+    plan.compositorVideo = compositorVideo;
     const int W = s.width & ~1, H = s.height & ~1;
     const Rational fps = s.fps.isValid() ? s.fps : p.canvas.fps;
     const QString FPS = fps.toString();
@@ -228,7 +242,7 @@ ExportPlan ExportGraph::build(const Project &p, const ExportSettings &s, bool ne
     // ---------------- video tracks
     QStringList trackLabels;
     int segCounter = 0;
-    for (int ti = 0; ti < p.tracks.size(); ++ti) {
+    for (int ti = 0; ti < p.tracks.size() && !compositorVideo && !plan.audioOnly; ++ti) {
         const Track &tr = p.tracks[ti];
         if (tr.kind != TrackKind::Video || tr.hidden)
             continue;
@@ -353,6 +367,12 @@ ExportPlan ExportGraph::build(const Project &p, const ExportSettings &s, bool ne
     }
 
     // ---------------- composite
+    if (compositorVideo) {
+        plan.usesOverlayPipe = true;
+        plan.overlayInputIndex =
+            addInput({"-f", "rawvideo", "-pix_fmt", "rgba", "-s", QString("%1x%2").arg(W).arg(H), "-framerate", FPS, "-i", "pipe:0"});
+        graph << QString("[%1:v]setpts=PTS-STARTPTS,format=yuv420p,trim=end_frame=%2[vout]").arg(plan.overlayInputIndex).arg(TOTAL);
+    } else if (!plan.audioOnly) {
     graph << QString("color=c=%1:s=%2x%3:r=%4:d=%5,format=rgba,trim=end_frame=%6,setpts=PTS-STARTPTS[base]")
                  .arg(p.canvas.background.name(QColor::HexRgb))
                  .arg(W)
@@ -376,9 +396,15 @@ ExportPlan ExportGraph::build(const Project &p, const ExportSettings &s, bool ne
         current = out;
     }
     graph << QString("[%1]format=yuv420p,trim=end_frame=%2[vout]").arg(current).arg(TOTAL);
+    }
 
     // ---------------- audio
-    QStringList audioLabels;
+    struct AudioPart {
+        QString label;
+        bool duck = false;
+    };
+    QVector<AudioPart> parts;
+    bool warnedCurve = false;
     for (const Track &tr : p.tracks) {
         if (tr.kind != TrackKind::Audio || tr.muted)
             continue;
@@ -388,6 +414,12 @@ ExportPlan ExportGraph::build(const Project &p, const ExportSettings &s, bool ne
             const MediaAsset *m = p.findMedia(c.mediaId);
             if (!m || !m->hasAudio || m->missing || !QFileInfo::exists(m->path))
                 continue;
+            if (c.fx.speedCurve.isSet()) {
+                if (!warnedCurve)
+                    plan.warnings << "Audio of clips with a speed curve is muted (the sound cannot follow a curve).";
+                warnedCurve = true;
+                continue;
+            }
             const TimeUs a = std::max(c.start, R0);
             const TimeUs b = std::min(c.end(), R1);
             if (b <= a)
@@ -400,8 +432,11 @@ ExportPlan ExportGraph::build(const Project &p, const ExportSettings &s, bool ne
             const double gain = std::pow(10.0, (c.audio.gainDb + tr.volumeDb) / 20.0);
             QStringList f;
             f << "asetpts=PTS-STARTPTS";
-            f << atempoChain(c.speed);
             f << QString("aresample=%1").arg(SR) << "aformat=sample_fmts=fltp:channel_layouts=stereo";
+            const QString fxChain = c.fx.audio.ffmpegChain(SR);
+            if (!fxChain.isEmpty())
+                f << fxChain;
+            f << atempoChain(c.speed);
             if (std::abs(gain - 1.0) > 1e-4)
                 f << QString("volume=%1").arg(num(gain));
             const TimeUs fadeIn = std::max<TimeUs>(0, c.start + c.audio.fadeIn - a);
@@ -414,30 +449,56 @@ ExportPlan ExportGraph::build(const Project &p, const ExportSettings &s, bool ne
             f << "apad" << QString("atrim=end_sample=%1").arg(nSamples);
             if (delaySamples > 0)
                 f << QString("adelay=delays=%1S:all=1").arg(delaySamples);
-            const QString label = QString("a%1").arg(audioLabels.size());
+            const QString label = QString("a%1").arg(parts.size());
             graph << QString("[%1:a]%2[%3]").arg(idx).arg(f.join(','), label);
-            audioLabels << label;
+            parts << AudioPart{label, tr.duck};
         }
     }
-    if (audioLabels.isEmpty()) {
-        graph << QString("anullsrc=r=%1:cl=stereo,atrim=end_sample=%2[aout]").arg(SR).arg(TOTAL_SAMPLES);
-    } else if (audioLabels.size() == 1) {
-        graph << QString("[%1]apad=whole_len=%2,atrim=end_sample=%2[aout]").arg(audioLabels.first()).arg(TOTAL_SAMPLES);
-    } else {
+    auto mixOf = [&](const QStringList &labels, const QString &out) {
+        if (labels.size() == 1) {
+            graph << QString("[%1]apad=whole_len=%2,atrim=end_sample=%2[%3]").arg(labels.first()).arg(TOTAL_SAMPLES).arg(out);
+            return;
+        }
         QString in;
-        for (const QString &l : audioLabels)
+        for (const QString &l : labels)
             in += "[" + l + "]";
-        graph << QString("%1amix=inputs=%2:normalize=0:dropout_transition=0,apad=whole_len=%3,atrim=end_sample=%3[aout]")
+        graph << QString("%1amix=inputs=%2:normalize=0:dropout_transition=0,apad=whole_len=%3,atrim=end_sample=%3[%4]")
                      .arg(in)
-                     .arg(audioLabels.size())
-                     .arg(TOTAL_SAMPLES);
+                     .arg(labels.size())
+                     .arg(TOTAL_SAMPLES)
+                     .arg(out);
+    };
+    QStringList voice, ducked;
+    for (const AudioPart &ap : parts)
+        (ap.duck ? ducked : voice) << ap.label;
+    const QString finalLabel = s.normalizeLoudness ? QString("amixed") : QString("aout");
+    if (parts.isEmpty()) {
+        graph << QString("anullsrc=r=%1:cl=stereo,atrim=end_sample=%2[%3]").arg(SR).arg(TOTAL_SAMPLES).arg(finalLabel);
+    } else if (!ducked.isEmpty() && !voice.isEmpty()) {
+        // music on "duck" tracks dips automatically while the voice plays
+        mixOf(voice, "avoice");
+        mixOf(ducked, "amusic");
+        graph << "[avoice]asplit=2[avoice1][akey]";
+        graph << "[amusic][akey]sidechaincompress=threshold=0.02:ratio=8:attack=30:release=500:makeup=1[aducked]";
+        graph << QString("[avoice1][aducked]amix=inputs=2:normalize=0:dropout_transition=0,atrim=end_sample=%1[%2]")
+                     .arg(TOTAL_SAMPLES)
+                     .arg(finalLabel);
+    } else {
+        QStringList all;
+        for (const AudioPart &ap : parts)
+            all << ap.label;
+        mixOf(all, finalLabel);
     }
+    if (s.normalizeLoudness)
+        graph << QString("[amixed]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=%1,apad=whole_len=%2,atrim=end_sample=%2[aout]")
+                     .arg(SR)
+                     .arg(TOTAL_SAMPLES);
 
     plan.filterGraph = graph.join(";\n");
     plan.filterScriptPath = scriptPath;
 
     // ---------------- encoder
-    plan.encoderName = chooseEncoder(s.videoCodec, s.encoder, availableEncoders, &plan.warnings);
+    plan.encoderName = chooseEncoder(s.videoCodec, s.encoder, availableEncoders, plan.audioOnly ? nullptr : &plan.warnings);
     QStringList venc{"-c:v", plan.encoderName};
     const bool isSoftware = plan.encoderName.startsWith("lib");
     const int kbps = s.rateMode == "bitrate" ? s.videoBitrateKbps : estimateBitrateKbps(W, H, fps, s.crf);
@@ -459,10 +520,28 @@ ExportPlan ExportGraph::build(const Project &p, const ExportSettings &s, bool ne
         args << "-/filter_complex" << scriptPath;
     else
         args << "-filter_complex_script" << scriptPath;
+    const QString ext = QFileInfo(s.outputPath).suffix().toLower();
+    if (plan.audioOnly) {
+        args << "-map" << "[aout]";
+        if (ext == "mp3")
+            args << "-c:a" << "libmp3lame" << "-b:a" << QString("%1k").arg(std::max(128, s.audioBitrateKbps));
+        else if (ext == "wav")
+            args << "-c:a" << "pcm_s16le";
+        else if (ext == "flac")
+            args << "-c:a" << "flac";
+        else
+            args << "-c:a" << "aac" << "-b:a" << QString("%1k").arg(s.audioBitrateKbps);
+        args << "-ar" << QString::number(SR);
+        if (ext == "m4a")
+            args << "-movflags" << "+faststart";
+        plan.encoderName = "audio only";
+        args << "OUTPUT_PLACEHOLDER";
+        plan.args = args;
+        return plan;
+    }
     args << "-map" << "[vout]" << "-map" << "[aout]";
     args << venc;
     args << "-c:a" << "aac" << "-b:a" << QString("%1k").arg(s.audioBitrateKbps) << "-ar" << QString::number(SR);
-    const QString ext = QFileInfo(s.outputPath).suffix().toLower();
     if (ext == "mp4" || ext == "mov" || ext == "m4v")
         args << "-movflags" << "+faststart";
     args << "-frames:v" << QString::number(TOTAL);

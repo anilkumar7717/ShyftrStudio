@@ -32,6 +32,7 @@ endif()
 # Everything that is not UI: project model, persistence, captions, media/export.
 add_library(shyftr_engine STATIC
     src/core/Model.h src/core/Model.cpp
+    src/core/Fx.h src/core/Fx.cpp
     src/core/ProjectSerializer.h src/core/ProjectSerializer.cpp
     src/core/ProjectStore.h src/core/ProjectStore.cpp
     src/core/TimelineOps.h src/core/TimelineOps.cpp
@@ -49,6 +50,10 @@ add_library(shyftr_engine STATIC
     src/media/ExportGraph.h src/media/ExportGraph.cpp
     src/media/ExportJob.h src/media/ExportJob.cpp
     src/media/CanvasLayout.h src/media/CanvasLayout.cpp
+    src/media/ImageFx.h src/media/ImageFx.cpp
+    src/media/Compositor.h src/media/Compositor.cpp
+    src/media/FrameReader.h src/media/FrameReader.cpp
+    src/media/LocalTools.h src/media/LocalTools.cpp
     resources/resources.qrc
 )
 target_include_directories(shyftr_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -75,6 +80,7 @@ if(SHYFTR_BUILD_APP)
         src/app/RecordDialog.h src/app/RecordDialog.cpp
         src/app/RelinkDialog.h src/app/RelinkDialog.cpp
         src/app/Widgets.h src/app/Widgets.cpp
+        src/app/ToolsController.h src/app/ToolsController.cpp
     )
     if(APPLE)
         set(APP_ICON ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/ShyftrStudio.icns)

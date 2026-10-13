@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../captions/OverlayRenderer.h"
+#include "../media/Compositor.h"
 #include "../core/Document.h"
 
 #include <QElapsedTimer>
@@ -20,7 +21,7 @@ namespace ss {
 // audio decoders for audio clips, synchronised to a master clock. Frames are composited
 // with the same geometry/colour maths as export, and the same OverlayScene draws titles
 // and captions on top.
-class PreviewEngine : public QObject {
+class PreviewEngine : public QObject, public FrameSource {
     Q_OBJECT
 public:
     explicit PreviewEngine(Document *doc, QObject *parent = nullptr);
@@ -42,6 +43,10 @@ public:
     bool showSafeArea() const { return m_safeArea; }
     QImage currentFrame() const { return m_frame; }
     void invalidate(); // project changed: rebuild overlay and recompose
+    // FrameSource: latest decoded picture for a clip (players) or the still image.
+    QImage frame(const Clip &clip, const MediaAsset &media, TimeUs sourceTime) override;
+    // Renders a full-quality frame at t (for snapshots), using the given source.
+    QImage renderStill(TimeUs t, QSize size, FrameSource &source) const;
 
 signals:
     void frameReady(const QImage &frame);
@@ -52,6 +57,7 @@ private:
     struct Slot {
         QString key;      // clip id
         QString mediaId;
+        QString path;     // file actually played (original, or processed audio)
         QMediaPlayer *player = nullptr;
         QVideoSink *sink = nullptr;
         QAudioOutput *audio = nullptr;
@@ -68,7 +74,11 @@ private:
     void compose(TimeUs t);
     void scheduleCompose();
     QImage stillImage(const MediaAsset &m);
-    void drawClip(QPainter &p, const Clip &c, const MediaAsset &m, const QImage &src, TimeUs t);
+    QString audioSourceFor(const Clip &c, const MediaAsset &m); // processed audio when the clip has voice effects
+    QHash<QString, QString> m_audioFxReady;   // cache key -> wav path
+    QSet<QString> m_audioFxRunning;
+    QSet<QString> m_audioFxFailed;
+    QSet<QString> m_inUse; // slot keys needed by the current syncSlots pass (never evicted)
 
     Document *m_doc;
     QHash<QString, Slot *> m_slots;

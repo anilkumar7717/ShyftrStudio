@@ -30,6 +30,7 @@ public:
     static int ffmpegMajorVersion();
     static QStringList ffmpegEncoders(); // cached
     static bool hasEncoder(const QString &name);
+    static bool encoderWorks(const QString &name); // probes once and caches
     static QString whisperVersionString();
 };
 

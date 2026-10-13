@@ -25,6 +25,7 @@ struct ExportSettings {
     bool burnCaptions = true;
     bool writeSrt = false;
     bool writeVtt = false;
+    bool normalizeLoudness = false;   // EBU R128 to -14 LUFS (streaming platforms)
     QString outputPath;
 
     QJsonObject toJson() const;
@@ -60,6 +61,8 @@ struct ExportPlan {
     QString filterGraph;       // written to a script file by the job
     QString filterScriptPath;  // placeholder replaced in args
     bool usesOverlayPipe = false;
+    bool compositorVideo = false; // pipe frames are the complete picture
+    bool audioOnly = false;
     int overlayInputIndex = -1;
     TimeUs duration = 0;
     qint64 frameCount = 0;
@@ -75,8 +78,11 @@ public:
     //  * tracks are composited bottom->top over the canvas background
     //  * titles/shapes/captions arrive as a raw RGBA pipe rendered by OverlayScene
     //  * audio clips are trimmed, retimed, gain/faded, delayed and mixed
+    // compositorVideo: the whole picture arrives on pipe:0 as raw RGBA (Qt compositor path).
+    // An audio extension (.mp3 .wav .m4a .aac .flac) produces an audio-only file.
     static ExportPlan build(const Project &p, const ExportSettings &s, bool needsOverlay, int ffmpegMajor,
-                            const QStringList &availableEncoders, const QString &scriptPath);
+                            const QStringList &availableEncoders, const QString &scriptPath, bool compositorVideo = false);
+    static bool isAudioOnlyPath(const QString &path);
     static QString chooseEncoder(const QString &codec, const QString &pref, const QStringList &available,
                                  QStringList *warnings = nullptr);
     static int estimateBitrateKbps(int w, int h, Rational fps, int crf);

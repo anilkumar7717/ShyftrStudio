@@ -2,8 +2,13 @@
 #include "../core/TimelineOps.h"
 #include "../media/ColorMath.h"
 #include "../media/ExportGraph.h"
+#include "../core/Tools.h"
 
 #include <QAudioOutput>
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFileInfo>
+#include <QProcess>
 #include <QImageReader>
 #include <QMediaPlayer>
 #include <QPainter>
@@ -211,23 +216,76 @@ void PreviewEngine::tick()
         compose(t);
 }
 
+QString PreviewEngine::audioSourceFor(const Clip &c, const MediaAsset &m)
+{
+    const QString chain = c.fx.audio.ffmpegChain(48000);
+    if (chain.isEmpty() || m_doc->projectDir().isEmpty())
+        return m.path;
+    const QString key = QString::fromLatin1(QCryptographicHash::hash((m.path + "|" + chain).toUtf8(), QCryptographicHash::Sha1).toHex().left(20));
+    if (m_audioFxReady.contains(key))
+        return m_audioFxReady.value(key);
+    if (m_audioFxFailed.contains(key))
+        return m.path;
+    const QString dir = m_doc->projectDir() + "/cache/audiofx";
+    const QString out = dir + "/" + key + ".wav";
+    if (QFileInfo::exists(out)) {
+        m_audioFxReady.insert(key, out);
+        return out;
+    }
+    if (!m_audioFxRunning.contains(key) && !Tools::ffmpeg().isEmpty()) {
+        // Render the effect once in the background; until then the original sound plays.
+        m_audioFxRunning.insert(key);
+        QDir().mkpath(dir);
+        auto *proc = new QProcess(this);
+        const QString partial = dir + "/" + key + ".partial.wav";
+        connect(proc, &QProcess::finished, this, [this, proc, key, partial, out](int code, QProcess::ExitStatus st) {
+            proc->deleteLater();
+            m_audioFxRunning.remove(key);
+            if (code == 0 && st == QProcess::NormalExit && QFile::rename(partial, out)) {
+                m_audioFxReady.insert(key, out);
+                emit statusMessage("Voice effect ready for preview");
+                syncSlots(m_doc->playhead(), m_playing);
+            } else {
+                QFile::remove(partial);
+                m_audioFxFailed.insert(key); // do not retry on every tick
+                emit statusMessage("The voice effect could not be prepared for preview (it is still applied on export)");
+            }
+        });
+        proc->start(Tools::ffmpeg(), {"-hide_banner", "-loglevel", "error", "-y", "-i", m.path, "-vn", "-af",
+                                      "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo," + chain, "-ar", "48000",
+                                      "-c:a", "pcm_s16le", partial});
+        emit statusMessage("Preparing the voice effect for preview…");
+    }
+    return m.path;
+}
+
 PreviewEngine::Slot *PreviewEngine::slotFor(const Clip &c, bool audio)
 {
     const QString key = (audio ? "a:" : "v:") + c.id;
-    if (Slot *s = m_slots.value(key)) {
-        s->lastUse = ++m_useCounter;
-        return s;
-    }
     const MediaAsset *m = m_doc->project().findMedia(c.mediaId);
     if (!m || m->missing)
         return nullptr;
-    // evict least-recently-used slots of the same kind
+    const QString path = audio ? audioSourceFor(c, *m) : m->path;
+    if (Slot *s = m_slots.value(key)) {
+        if (s->path == path) {
+            s->lastUse = ++m_useCounter;
+            return s;
+        }
+        // the source changed (e.g. the processed voice became ready): recreate the player
+        m_slots.remove(key);
+        s->player->stop();
+        delete s->player;
+        delete s->sink;
+        delete s->audio;
+        delete s;
+    }
+    // evict the least-recently-used slot of the same kind that this pass does not need
     int count = 0;
     Slot *lru = nullptr;
     for (Slot *s : std::as_const(m_slots))
         if (s->isAudio == audio) {
             ++count;
-            if (!lru || s->lastUse < lru->lastUse)
+            if (!m_inUse.contains(s->key) && (!lru || s->lastUse < lru->lastUse))
                 lru = s;
         }
     if (count >= (audio ? kMaxAudioSlots : kMaxVideoSlots) && lru) {
@@ -250,8 +308,10 @@ PreviewEngine::Slot *PreviewEngine::slotFor(const Clip &c, bool audio)
     } else {
         s->sink = new QVideoSink;
         s->player->setVideoSink(s->sink);
-        connect(s->sink, &QVideoSink::videoFrameChanged, this, [this, s](const QVideoFrame &f) {
-            if (!m_slots.contains(s->key))
+        const QString slotKey = key;
+        connect(s->sink, &QVideoSink::videoFrameChanged, this, [this, slotKey](const QVideoFrame &f) {
+            Slot *s = m_slots.value(slotKey); // never touch a slot that was deleted meanwhile
+            if (!s)
                 return;
             QImage img = f.toImage();
             if (img.isNull())
@@ -269,7 +329,8 @@ PreviewEngine::Slot *PreviewEngine::slotFor(const Clip &c, bool audio)
     connect(s->player, &QMediaPlayer::errorOccurred, this, [this, mediaName](QMediaPlayer::Error, const QString &msg) {
         emit statusMessage(QString("Preview could not decode %1: %2").arg(mediaName, msg));
     });
-    s->player->setSource(QUrl::fromLocalFile(m->path));
+    s->path = path;
+    s->player->setSource(QUrl::fromLocalFile(path));
     m_slots.insert(key, s);
     return s;
 }
@@ -288,13 +349,15 @@ void PreviewEngine::syncSlots(TimeUs t, bool playing)
     const Project &p = m_doc->project();
     QSet<QString> keep;
     const TimeUs tolerance = playing ? 150 * kUsPerMs : 0;
+    m_inUse.clear();
+    for (const auto &need : Compositor::needsAt(p, t))
+        m_inUse.insert("v:" + need.clipId);
 
-    auto drive = [&](Slot *s, const Clip &c, bool isAudio, double volume) {
+    auto drive = [&](Slot *s, TimeUs src, double clipRate, bool isAudio, double volume) {
         keep.insert(s->key);
-        const TimeUs src = c.timelineToSource(t);
         const qint64 wantMs = src / kUsPerMs;
         if (playing) {
-            const double rate = std::clamp(c.speed * m_rate, 0.25, 8.0);
+            const double rate = std::clamp(clipRate * m_rate, 0.25, 8.0);
             if (std::abs(s->player->playbackRate() - rate) > 1e-3)
                 s->player->setPlaybackRate(rate);
             if (std::llabs(s->player->position() - wantMs) * kUsPerMs > tolerance)
@@ -311,12 +374,14 @@ void PreviewEngine::syncSlots(TimeUs t, bool playing)
             s->audio->setVolume(float(std::clamp(volume, 0.0, 1.0)));
     };
 
-    for (const Clip *c : TimelineOps::activeVideoClips(p, t)) {
-        const MediaAsset *m = p.findMedia(c->mediaId);
-        if (!m || m->kind != MediaKind::Video)
+    // video: every picture the compositor needs (including both sides of a transition)
+    for (const auto &need : Compositor::needsAt(p, t)) {
+        const Clip *c = p.findClip(need.clipId);
+        const MediaAsset *m = p.findMedia(need.mediaId);
+        if (!c || !m || m->kind != MediaKind::Video)
             continue;
         if (Slot *s = slotFor(*c, false))
-            drive(s, *c, false, 0);
+            drive(s, need.sourceTime, Compositor::sourceRateAt(*c, t), false, 0);
     }
     // pre-roll the next video clip on each track so cuts are seamless
     for (const auto &tr : p.tracks) {
@@ -328,7 +393,8 @@ void PreviewEngine::syncSlots(TimeUs t, bool playing)
                 if (m && m->kind == MediaKind::Video)
                     if (Slot *s = slotFor(c, false)) {
                         keep.insert(s->key);
-                        const qint64 wantMs = c.in / kUsPerMs;
+                        const TimeUs half = c.fx.transitionIn.isSet() ? c.fx.transitionIn.duration / 2 : 0;
+                        const qint64 wantMs = std::max<TimeUs>(0, c.timelineToSource(c.start - half)) / kUsPerMs;
                         if (s->player->playbackState() == QMediaPlayer::PlayingState)
                             s->player->pause();
                         if (std::llabs(s->player->position() - wantMs) > 40)
@@ -338,7 +404,18 @@ void PreviewEngine::syncSlots(TimeUs t, bool playing)
             }
     }
     if (playing && m_rate > 0) {
-        for (const Clip *c : TimelineOps::activeAudioClips(p, t)) {
+        const auto active = TimelineOps::activeAudioClips(p, t);
+        // music on "duck" tracks dips while other audio (voice) plays
+        bool voiceActive = false;
+        for (const Clip *c : active) {
+            const Track *tr = nullptr;
+            p.findClip(c->id, &tr);
+            if (tr && !tr->duck && !c->audio.mute && !c->fx.speedCurve.isSet())
+                voiceActive = true;
+        }
+        for (const Clip *c : active) {
+            if (c->fx.speedCurve.isSet())
+                continue; // a curve's audio is muted (as in export)
             const Track *tr = nullptr;
             p.findClip(c->id, &tr);
             double vol = std::pow(10.0, (c->audio.gainDb + (tr ? tr->volumeDb : 0)) / 20.0);
@@ -346,8 +423,10 @@ void PreviewEngine::syncSlots(TimeUs t, bool playing)
                 vol *= double(t - c->start) / c->audio.fadeIn;
             if (c->audio.fadeOut > 0 && t > c->end() - c->audio.fadeOut)
                 vol *= double(c->end() - t) / c->audio.fadeOut;
+            if (tr && tr->duck && voiceActive)
+                vol *= 0.25;
             if (Slot *s = slotFor(*c, true))
-                drive(s, *c, true, vol);
+                drive(s, c->timelineToSource(t), c->speed, true, vol);
         }
     }
     releaseUnused(keep);
@@ -374,49 +453,20 @@ void PreviewEngine::scheduleCompose()
         m_composeTimer.start();
 }
 
-void PreviewEngine::drawClip(QPainter &p, const Clip &c, const MediaAsset &m, const QImage &srcIn, TimeUs t)
+QImage PreviewEngine::frame(const Clip &clip, const MediaAsset &media, TimeUs)
 {
-    const CanvasSettings &cv = m_doc->project().canvas;
-    const QSize out = outputSize();
-    const double k = double(out.width()) / cv.width;
-    QImage src = srcIn;
-    // Decoders may hand over frames in coded orientation; rotate to display orientation.
-    if (m.width != m.height && ((src.width() > src.height()) != (m.width > m.height))) {
-        QTransform rot;
-        rot.rotate(m.rotation == 270 ? -90 : 90);
-        src = src.transformed(rot);
-    }
-    const ClipGeometry g = computeGeometry(m.width, m.height, c.transform, cv.width, cv.height);
-    const double sx = double(src.width()) / std::max(1, m.width);
-    const double sy = double(src.height()) / std::max(1, m.height);
-    const QRect crop(int(g.crop.x() * sx), int(g.crop.y() * sy), int(g.crop.width() * sx), int(g.crop.height() * sy));
-    QImage part = src.copy(crop);
-    if (!c.color.isIdentity()) {
-        // colour on a preview-sized copy (same maths as export)
-        const QSize target(std::max(2, int(g.crop.width() * g.scaleX * k)), std::max(2, int(g.crop.height() * g.scaleY * k)));
-        if (part.width() > target.width() * 1.5)
-            part = part.scaled(target, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-        part = part.convertToFormat(QImage::Format_ARGB32);
-        ColorMath::apply(part, c.color);
-    }
-    const double opacity = GraphicsRenderer::clipOpacity(c, t);
-    if (opacity <= 0.001)
-        return;
-    double drawW = g.crop.width() * g.scaleX * k;
-    double drawH = g.crop.height() * g.scaleY * k;
-    if (g.quarterTurns % 2 == 1) {
-        drawW = g.crop.width() * g.scaleY * k;
-        drawH = g.crop.height() * g.scaleX * k;
-    }
-    const QPointF center((g.x + g.outW / 2) * k, (g.y + g.outH / 2) * k);
-    p.save();
-    p.setOpacity(opacity);
-    p.setRenderHint(QPainter::SmoothPixmapTransform);
-    p.translate(center);
-    p.rotate(g.quarterTurns * 90 + g.freeAngle);
-    p.scale(c.transform.flipH ? -1 : 1, c.transform.flipV ? -1 : 1);
-    p.drawImage(QRectF(-drawW / 2, -drawH / 2, drawW, drawH), part);
-    p.restore();
+    if (media.kind == MediaKind::Image)
+        return stillImage(media);
+    if (Slot *s = m_slots.value("v:" + clip.id))
+        return s->frame;
+    return {};
+}
+
+QImage PreviewEngine::renderStill(TimeUs t, QSize size, FrameSource &source) const
+{
+    QImage canvas(size, QImage::Format_ARGB32_Premultiplied);
+    Compositor::render(canvas, m_doc->project(), m_overlay, t, source);
+    return canvas;
 }
 
 void PreviewEngine::compose(TimeUs t)
@@ -424,37 +474,11 @@ void PreviewEngine::compose(TimeUs t)
     if (!m_doc->isOpen())
         return;
     m_lastComposeT = t;
-    const Project &p = m_doc->project();
     const QSize out = outputSize();
     QImage canvas(out, QImage::Format_ARGB32_Premultiplied);
-    canvas.fill(p.canvas.background);
-    QPainter painter(&canvas);
-    painter.setRenderHint(QPainter::Antialiasing);
-    for (const Clip *c : TimelineOps::activeVideoClips(p, t)) {
-        const MediaAsset *m = p.findMedia(c->mediaId);
-        if (!m)
-            continue;
-        if (m->missing) {
-            painter.fillRect(canvas.rect(), QColor(60, 20, 20));
-            painter.setPen(Qt::white);
-            painter.drawText(canvas.rect(), Qt::AlignCenter, "Media offline: " + m->name + "\nUse File → Relink Media");
-            continue;
-        }
-        QImage src;
-        if (m->kind == MediaKind::Image) {
-            src = stillImage(*m);
-        } else if (Slot *s = m_slots.value("v:" + c->id)) {
-            src = s->frame;
-        }
-        if (src.isNull())
-            continue;
-        drawClip(painter, *c, *m, src, t);
-    }
-    painter.save();
-    painter.scale(1.0, 1.0);
-    m_overlay.render(painter, out, t);
-    painter.restore();
+    Compositor::render(canvas, m_doc->project(), m_overlay, t, *this);
     if (m_safeArea) {
+        QPainter painter(&canvas);
         const QRectF safe = SafeArea::forFrame(out.width(), out.height());
         painter.setPen(QPen(QColor(255, 255, 255, 120), 1, Qt::DashLine));
         painter.setBrush(Qt::NoBrush);
@@ -462,7 +486,6 @@ void PreviewEngine::compose(TimeUs t)
         painter.drawLine(QPointF(out.width() / 2.0 - 8, out.height() / 2.0), QPointF(out.width() / 2.0 + 8, out.height() / 2.0));
         painter.drawLine(QPointF(out.width() / 2.0, out.height() / 2.0 - 8), QPointF(out.width() / 2.0, out.height() / 2.0 + 8));
     }
-    painter.end();
     m_frame = canvas;
     emit frameReady(m_frame);
 }

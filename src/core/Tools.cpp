@@ -1,4 +1,6 @@
 #include "Tools.h"
+
+#include <QHash>
 #include "Settings.h"
 
 #include <QCoreApplication>
@@ -117,6 +119,23 @@ QStringList Tools::ffmpegEncoders()
 bool Tools::hasEncoder(const QString &name)
 {
     return ffmpegEncoders().contains(name);
+}
+
+bool Tools::encoderWorks(const QString &name)
+{
+    // An encoder can be compiled in but unusable (no GPU / driver). Try a tiny encode once.
+    static QMutex mutex;
+    static QHash<QString, bool> cache;
+    QMutexLocker lock(&mutex);
+    auto it = cache.find(name);
+    if (it != cache.end())
+        return it.value();
+    const auto r = run(ffmpeg(), {"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:r=30:d=0.2",
+                                  "-c:v", name, "-pix_fmt", "yuv420p", "-f", "null", "-"},
+                       20000);
+    const bool ok = r.started && !r.timedOut && r.exitCode == 0;
+    cache.insert(name, ok);
+    return ok;
 }
 
 QString Tools::whisperVersionString()

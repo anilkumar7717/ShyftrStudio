@@ -6,7 +6,7 @@
 3. **Pick a caption style:** click any template. Changing styles never re-transcribes and never loses your corrections.
 4. **Add music:** goes onto its own track at −14 dB, with fades, trimmed to your video.
 5. **Format & look:** 16:9 / 9:16 / 1:1 / 4:5 (clips fill the new frame), plus a colour look.
-6. **Export:** pick a preset and click *Export video…*.
+6. **Export:** pick a preset and click *Export video…*. Choose MP4, MOV, GIF or audio only (MP3/WAV/M4A), and tick *Normalise loudness* for social platforms.
 
 ## Advanced Editor (Ctrl/⌘+2)
 Dockable **Media**, **Effects**, **Inspector**, **AI Subtitles** and **Timeline** panels. Rearrange them freely; each mode remembers its own layout.
@@ -18,6 +18,36 @@ Dockable **Media**, **Effects**, **Inspector**, **AI Subtitles** and **Timeline*
 - Track buttons: **M** mute, **L** lock, **H** hide, **CC** burn captions into exports.
 - Right-click clips, tracks or empty space for more commands (speed, fades, unlink, rename, add title, and so on).
 - Caption lane: click a caption to jump to it, drag its edges to retime it, and double-click to edit its text. An orange underline marks words that need review.
+
+### Library (text, stickers, effects, transitions, filters…)
+The **Library** panel on the left has live previews of everything you can add. Search at the top, or pick a tab:
+- **Text**: 18 ready-made styles (bold pop, neon, gradient headline, lower third, breaking news, subscribe button, quote, chapter, price tag, typewriter, speech bubble…). Double-click to add at the playhead, or drag onto the video to place it.
+- **Stickers**: emoji stickers that pop in and float. Drag them onto the video.
+- **Effects**: drag onto a clip to apply it to that clip, or onto empty timeline space to make an **effect layer**: a pink clip whose effect applies to everything on the tracks below while it plays. Trim it like any clip.
+- **Transitions**: drag onto the cut between two clips on the same track (or select the second clip and double-click). The blue bow tie on the timeline shows it; change the type and length in Inspector → Basic.
+- **Filters**: colour looks. Applied to the selected clips, or as a filter layer when nothing is selected.
+- **Shapes**, **Speed** curves, **Audio** voice effects and **Basics** (fades, framing).
+
+### Inspector tabs
+Select a clip and use the tabs on the right:
+- **Basic**: position, scale, rotation, opacity, mirror/flip, transition in, fades, crop, colour.
+- **Animate**: keyframes. Move the playhead, set the clip how you want it, press **◆ Add keyframe** (or ⌘/Ctrl+K); move and change it again. Once a clip has keyframes, dragging it on the video or changing Transform sets the keyframe at the playhead. Pick the curve (smooth, linear, ease in/out, bounce, hold) or a **Quick animation** preset (zoom in/out, pan, pop in, fade, spin, rise). Diamonds on the timeline clip show where the keyframes are.
+- **Effects**: filter look, adjustments (hue, vibrance, highlights, shadows, fade, vignette, grain, sharpen), your own **.cube LUT**, the clip's effects list (intensity, speed, order) and blend mode.
+- **Cutout**: **chroma key** (green/blue screen with strength, softness and spill removal), **masks** (linear, mirror, circle, rectangle, with feather and invert) and **canvas background** (blurred video or a colour behind the clip, great for landscape video in a 9:16 project).
+- **Speed**: speed, **speed curves**, **Reverse**, **Freeze frame**, **Stabilise**, **Extract audio**.
+- Titles have **Text**, **Style** (gradient, shadow, letter spacing, box), and **Animate** (in, out and loop animations plus keyframes). Audio clips have **Audio** (volume, auto-duck) and **Voice** (voice changers, noise reduction, voice enhance).
+
+### Smart tools (Tools menu)
+- **Remove Silences…** cuts the quiet parts and closes the gaps (choose the level, shortest pause and how much breathing room to keep).
+- **Remove Filler Words** cuts “um”, “uh”, “erm”… using the captions' word timings (generate captions first).
+- **Split by Scenes** cuts a clip wherever the shot changes.
+- **Find Beats** adds markers on the beats of the music; clips snap to markers while you drag. **M** adds a marker at the playhead.
+- **Text to Speech…** turns text (or your captions) into a voice-over with the voices installed on your computer.
+- **Save Frame as Image…** exports the current frame as PNG/JPEG.
+- **Auto-duck**: tick it on the music track (Inspector → Audio) and the music dips whenever someone speaks.
+- **Translate to English**: an option in AI Subtitles → Generate.
+
+Everything above runs on this computer with FFmpeg and Qt. Heavy jobs (reverse, stabilise) show progress and can be cancelled; their results are saved in the project's `media/generated` folder.
 
 ### Moving and resizing things on the video
 Click anything on the video to select it: captions, titles, shapes or a video layer. A blue box with corner handles appears.
@@ -56,6 +86,9 @@ After generation, the *Edit captions* tab opens automatically, in Quick mode as 
 | ⌘I | Import | ⇧⌘R | Record voice-over |
 | ⇧⌘C | Generate captions | ⌘E | Export |
 | ⌘S | Save | ⌘Z / ⇧⌘Z | Undo / redo |
+| ⌘K | Add keyframe at playhead | ⇧F | Freeze frame |
+| M | Add marker | ⇧M / ⌥M | Previous / next marker |
+| ⇧⌘S | Snapshot (save frame as PNG) | | |
 
 ## Saving and recovery
 - **⌘S** saves atomically and keeps rotating backups in `backups/`.

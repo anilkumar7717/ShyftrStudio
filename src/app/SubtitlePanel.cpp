@@ -231,6 +231,9 @@ void SubtitlePanel::buildGenerateTab(QWidget *tab)
     m_refine = new QCheckBox("Refine word timing to speech onsets");
     m_refine->setChecked(Settings::instance().refineWordTiming);
     f->addRow("", m_refine);
+    m_translate = new QCheckBox("Translate to English (captions in English for any spoken language)");
+    m_translate->setToolTip("Uses the speech model's built-in translation, on this computer");
+    f->addRow("", m_translate);
     v->addLayout(f);
 
     auto *row = new QHBoxLayout;
@@ -362,6 +365,7 @@ void SubtitlePanel::generate(const QString &mediaId, const QString &languageCode
     req.threads = Settings::instance().aiThreads;
     req.useGpu = Settings::instance().aiUseGpu;
     req.refineTiming = m_refine->isChecked();
+    req.translateToEnglish = m_translate && m_translate->isChecked();
     req.workDir = m_doc->projectDir() + "/subtitles/work";
     const Track *t = captionTrack();
     req.styleForSegmentation = TemplateLibrary::instance().get(t ? t->styleId : "bold-highlight-yellow");

@@ -11,6 +11,7 @@
 #include "EffectsBrowser.h"
 #include "ExportDialog.h"
 #include "InspectorWidget.h"
+#include "ToolsController.h"
 #include "MediaBinWidget.h"
 #include "PreferencesDialog.h"
 #include "PreviewEngine.h"
@@ -117,7 +118,8 @@ void MainWindow::buildUi()
 
     m_timelineDock = dock("Timeline", "timelineDock", m_timeline, Qt::BottomDockWidgetArea);
     m_mediaDock = dock("Media", "mediaDock", m_mediaBin, Qt::LeftDockWidgetArea);
-    m_effectsDock = dock("Effects", "effectsDock", m_effects, Qt::LeftDockWidgetArea);
+    m_effectsDock = dock("Library", "effectsDock", m_effects, Qt::LeftDockWidgetArea);
+    m_tools = new ToolsController(&m_doc, m_engine, this);
     m_inspectorDock = dock("Inspector", "inspectorDock", m_inspector, Qt::RightDockWidgetArea);
     m_subtitleDock = dock("AI Subtitles", "subtitleDock", m_subtitles, Qt::RightDockWidgetArea);
     m_quickDock = dock("Quick Editor", "quickDock", m_quick, Qt::RightDockWidgetArea);
@@ -167,11 +169,31 @@ void MainWindow::buildUi()
     connect(m_viewer, &ViewerWidget::effectDropped, this, [this](const QString &id, const QPointF &pos) {
         m_effects->applyEffect(id, pos);
     });
+    connect(m_timeline, &TimelineWidget::libraryItemDropped, this, [this](const QString &id, const QString &clip, TimeUs at) {
+        m_effects->applyEffect(id, QPointF(-1, -1), clip, at);
+    });
+    connect(m_inspector, &InspectorWidget::reverseRequested, m_tools, &ToolsController::reverseClip);
+    connect(m_inspector, &InspectorWidget::freezeFrameRequested, m_tools, &ToolsController::freezeFrame);
+    connect(m_inspector, &InspectorWidget::stabilizeRequested, m_tools, &ToolsController::stabilizeClip);
+    connect(m_inspector, &InspectorWidget::extractAudioRequested, m_tools, &ToolsController::extractAudio);
+    connect(m_inspector, &InspectorWidget::statusMessage, this, [this](const QString &m) { statusBar()->showMessage(m, 5000); });
+    connect(m_tools, &ToolsController::statusMessage, this, [this](const QString &m) { statusBar()->showMessage(m, 6000); });
     connect(m_subtitles, &SubtitlePanel::captionsReady, this, [this]() {
         showSubtitleTab(1);
         statusBar()->showMessage("Captions ready — click any caption to edit, or double-click it on the video", 8000);
     });
     connect(m_quick, &QuickPanel::editCaptionsRequested, this, [this]() { showSubtitleTab(1); });
+    connect(m_quick, &QuickPanel::libraryRequested, this, [this](const QString &cat) {
+        m_effectsDock->show();
+        m_effectsDock->raise();
+        m_effects->showCategory(cat);
+    });
+    connect(m_quick, &QuickPanel::toolRequested, this, [this](const QString &tool) {
+        if (tool == "tts")
+            m_tools->textToSpeech();
+        else if (tool == "silences")
+            m_tools->removeSilences();
+    });
     connect(m_timeline, &TimelineWidget::filesDropped, this, [this](const QStringList &paths, TimeUs at, const QString &track) {
         importFiles(paths, at, track);
     });
@@ -360,6 +382,71 @@ void MainWindow::buildActions()
     act("tl.title", "Add Title at Playhead", QKeySequence("T"), [this]() { m_effects->applyEffect("title-center"); }, true);
     act("tl.lowerThird", "Add Lower Third", QKeySequence("Shift+T"), [this]() { m_effects->applyEffect("title-lower"); }, true);
 
+    // Tools (all local)
+    auto firstSelected = [this]() { return m_doc.selectedClips().isEmpty() ? QString() : m_doc.selectedClips().first(); };
+    act("tools.silences", "Remove Silences…", QKeySequence(), [this]() { m_tools->removeSilences(); });
+    act("tools.fillers", "Remove Filler Words (um, uh)…", QKeySequence(), [this]() { m_tools->removeFillerWords(); });
+    act("tools.scenes", "Split by Scenes", QKeySequence(), [this]() { m_tools->splitScenes(); });
+    act("tools.beats", "Find Beats (add markers)", QKeySequence(), [this]() { m_tools->detectBeats(); });
+    act("tools.tts", "Text to Speech…", QKeySequence(), [this]() { m_tools->textToSpeech(); });
+    act("tools.reverse", "Reverse Clip", QKeySequence(), [this, firstSelected]() { m_tools->reverseClip(firstSelected()); });
+    act("tools.freeze", "Freeze Frame", QKeySequence("Shift+F"), [this]() { m_tools->freezeFrame(); }, true);
+    act("tools.stabilize", "Stabilise Clip", QKeySequence(), [this, firstSelected]() { m_tools->stabilizeClip(firstSelected()); });
+    act("tools.extractAudio", "Extract Audio", QKeySequence(), [this, firstSelected]() { m_tools->extractAudio(firstSelected()); });
+    act("tools.snapshot", "Save Frame as Image…", QKeySequence("Ctrl+Shift+S"), [this]() { m_tools->snapshot(); });
+    act("mark.add", "Add / Remove Marker", QKeySequence("M"), [this]() { m_tools->addMarker(); }, true);
+    act("mark.prev", "Previous Marker", QKeySequence("Shift+M"), [this]() { m_tools->jumpMarker(-1); }, true);
+    act("mark.next", "Next Marker", QKeySequence("Alt+M"), [this]() { m_tools->jumpMarker(1); }, true);
+    act("mark.clearAll", "Clear All Markers", QKeySequence(), [this]() { m_tools->clearMarkers(); });
+    act("lib.text", "Add Text…", QKeySequence(), [this]() {
+        m_effectsDock->show();
+        m_effectsDock->raise();
+        m_effects->showCategory("Text");
+    });
+    act("lib.effects", "Add Effect…", QKeySequence(), [this]() {
+        m_effectsDock->show();
+        m_effectsDock->raise();
+        m_effects->showCategory("Effects");
+    });
+    act("lib.transitions", "Add Transition…", QKeySequence(), [this]() {
+        m_effectsDock->show();
+        m_effectsDock->raise();
+        m_effects->showCategory("Transitions");
+    });
+    act("lib.filters", "Add Filter…", QKeySequence(), [this]() {
+        m_effectsDock->show();
+        m_effectsDock->raise();
+        m_effects->showCategory("Filters");
+    });
+    act("lib.stickers", "Add Sticker…", QKeySequence(), [this]() {
+        m_effectsDock->show();
+        m_effectsDock->raise();
+        m_effects->showCategory("Stickers");
+    });
+    act("clip.keyframe", "Add Keyframe", QKeySequence("Ctrl+K"), [this]() {
+        const TimeUs ph = m_doc.playhead();
+        const QStringList ids = m_doc.selectedClips();
+        if (ids.isEmpty())
+            return statusBar()->showMessage("Select a clip to keyframe", 3000);
+        m_doc.apply("Keyframe", [&](Project &p) {
+            bool any = false;
+            for (const QString &id : ids)
+                if (Clip *c = p.findClip(id); c && c->type != ClipType::Effect) {
+                    const TimeUs local = std::clamp<TimeUs>(ph - c->start, 0, c->duration());
+                    if (Keyframes::indexAt(c->fx.keyframes, local, 20 * kUsPerMs) >= 0)
+                        continue;
+                    const AnimatedValues v = c->animatedAt(c->start + local).baseValues();
+                    c->fx.keyframes << Keyframe{local, v.x, v.y, v.scale, v.rotation, v.opacity, "smooth"};
+                    Keyframes::sort(c->fx.keyframes);
+                    any = true;
+                }
+            return any;
+        });
+        m_inspectorDock->show();
+        m_inspectorDock->raise();
+        m_inspector->showTab("Animate");
+    }, true);
+
     // Captions
     act("cap.generate", "Generate Captions…", QKeySequence("Ctrl+Shift+C"), [this]() {
         m_subtitleDock->show();
@@ -465,6 +552,24 @@ void MainWindow::buildMenus()
     for (const char *id : {"tl.snap", "tl.zoomIn", "tl.zoomOut", "tl.fit"})
         tl->addAction(m_actions[id]);
 
+    tl->addSeparator();
+    for (const char *id : {"mark.add", "mark.prev", "mark.next", "mark.clearAll"})
+        tl->addAction(m_actions[id]);
+
+    auto *clipMenu = menuBar()->addMenu("C&lip");
+    for (const char *id : {"clip.keyframe", "tools.freeze", "tools.reverse", "tools.stabilize", "tools.extractAudio"})
+        clipMenu->addAction(m_actions[id]);
+    clipMenu->addSeparator();
+    for (const char *id : {"lib.text", "lib.stickers", "lib.effects", "lib.transitions", "lib.filters"})
+        clipMenu->addAction(m_actions[id]);
+
+    auto *tools = menuBar()->addMenu("T&ools");
+    for (const char *id : {"tools.silences", "tools.fillers", "tools.scenes", "tools.beats"})
+        tools->addAction(m_actions[id]);
+    tools->addSeparator();
+    tools->addAction(m_actions["tools.tts"]);
+    tools->addAction(m_actions["tools.snapshot"]);
+
     auto *play = menuBar()->addMenu("&Playback");
     for (const char *id : {"play.toggle", "play.j", "play.k", "play.l", "play.prevFrame", "play.nextFrame", "play.back10",
                            "play.fwd10", "play.start", "play.end", "play.prevEdit", "play.nextEdit", "play.loop"})
@@ -555,7 +660,7 @@ void MainWindow::showEditor()
 static QString layoutKey(bool quick)
 {
     // v2: responsive layouts (older saved layouts from fixed-size builds are ignored)
-    return quick ? "layout/v2/quick" : "layout/v2/advanced";
+    return quick ? "layout/v3/quick" : "layout/v3/advanced";
 }
 
 void MainWindow::applyDockProportions(bool quick)
@@ -565,9 +670,14 @@ void MainWindow::applyDockProportions(bool quick)
     resizeDocks({m_timelineDock}, {timelineH}, Qt::Vertical);
     if (quick) {
         const int right = std::clamp(int(W * 0.27), 300, 460);
-        resizeDocks({m_quickDock}, {right}, Qt::Horizontal);
+        if (m_effectsDock->isVisible()) {
+            const int left = std::clamp(int(W * 0.17), 236, 300); // two library columns
+            resizeDocks({m_effectsDock, m_quickDock}, {left, right}, Qt::Horizontal);
+        } else {
+            resizeDocks({m_quickDock}, {right}, Qt::Horizontal);
+        }
     } else {
-        const int left = std::clamp(int(W * 0.17), 200, 340);
+        const int left = std::clamp(int(W * 0.17), 236, 340);
         const int right = std::clamp(int(W * 0.25), 280, 480);
         resizeDocks({m_mediaDock, m_inspectorDock}, {left, right}, Qt::Horizontal);
     }
@@ -600,8 +710,12 @@ void MainWindow::setQuickMode(bool quick)
         }
         m_quickDock->setVisible(quick);
         m_subtitleDock->setVisible(true);
-        for (QDockWidget *d : {m_mediaDock, m_effectsDock, m_inspectorDock})
+        for (QDockWidget *d : {m_mediaDock, m_inspectorDock})
             d->setVisible(!quick);
+        // the creative library stays on the left in Quick mode when there is room for it
+        m_effectsDock->setVisible(!quick || width() >= 1180);
+        if (quick)
+            m_effectsDock->raise();
         if (!quick) {
             m_mediaDock->raise();
             m_inspectorDock->raise();

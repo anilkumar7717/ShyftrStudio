@@ -1,7 +1,9 @@
 #include "OverlayRenderer.h"
+#include "../media/ImageFx.h"
 
 #include <QFontMetricsF>
 #include <QPainterPath>
+#include <QTextLayout>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
@@ -412,13 +414,103 @@ double GraphicsRenderer::clipOpacity(const Clip &c, TimeUs t)
 QFont GraphicsRenderer::titleFont(const TitleProps &tp, int frameHeight)
 {
     QFont f;
-    f.setFamilies({tp.fontFamily, "Helvetica Neue", "Arial", "Segoe UI", "DejaVu Sans"});
+    // emoji fonts last: they only supply glyphs the text fonts lack
+    f.setFamilies({tp.fontFamily, "Helvetica Neue", "Arial", "Segoe UI", "Noto Sans", "DejaVu Sans", "Apple Color Emoji",
+                   "Segoe UI Emoji", "Noto Color Emoji"});
     f.setPixelSize(std::max(6, int(std::lround(tp.sizePct * frameHeight))));
     f.setWeight(QFont::Weight(std::clamp(tp.weight, 100, 900)));
     f.setItalic(tp.italic);
+    if (tp.letterSpacingPct != 0)
+        f.setLetterSpacing(QFont::PercentageSpacing, 100 + tp.letterSpacingPct);
     f.setHintingPreference(QFont::PreferNoHinting);
     return f;
 }
+
+static QRectF scaledAbout(const QRectF &r, double k)
+{
+    if (std::abs(k - 1.0) < 1e-9)
+        return r;
+    const QPointF c = r.center();
+    return QRectF(c.x() - r.width() * k / 2, c.y() - r.height() * k / 2, r.width() * k, r.height() * k);
+}
+
+namespace {
+// Colour emoji (bitmap / COLR glyphs) have no outlines, so QPainterPath::addText draws
+// nothing for them; such runs are drawn with drawText, which renders colour glyphs.
+bool isEmojiCodepoint(char32_t u)
+{
+    return (u >= 0x1F000 && u <= 0x1FAFF) || (u >= 0x2600 && u <= 0x27BF) || (u >= 0x2B00 && u <= 0x2BFF) || u == 0x2764
+        || u == 0x2705 || u == 0x274C || u == 0x2B50 || u == 0x203C || u == 0x2049 || (u >= 0x1F1E6 && u <= 0x1F1FF);
+}
+
+struct Run {
+    QString text;
+    bool emoji = false;
+};
+
+QVector<Run> emojiRuns(const QString &s)
+{
+    QVector<Run> runs;
+    const QList<uint> cps = s.toUcs4();
+    for (int i = 0; i < cps.size(); ++i) {
+        const char32_t u = cps[i];
+        bool emoji = isEmojiCodepoint(u);
+        // joiners / variation selectors / skin tones stay with the emoji they modify
+        if (u == 0x200D || u == 0xFE0F || (u >= 0x1F3FB && u <= 0x1F3FF))
+            emoji = !runs.isEmpty() && runs.last().emoji;
+        const QString piece = QString::fromUcs4(&u, 1);
+        if (runs.isEmpty() || runs.last().emoji != emoji)
+            runs << Run{piece, emoji};
+        else
+            runs.last().text += piece;
+    }
+    return runs;
+}
+
+bool hasEmoji(const QString &s)
+{
+    for (uint u : s.toUcs4())
+        if (isEmojiCodepoint(u))
+            return true;
+    return false;
+}
+
+QFont emojiFontFor(const QFont &f)
+{
+    QFont e;
+    e.setFamilies({"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"});
+    e.setPixelSize(f.pixelSize());
+    return e;
+}
+
+// Lays a line out run by run: text runs with the title font, emoji runs with an emoji
+// font (fallback-measured emoji are unreliable for colour bitmap fonts).
+struct LaidRun {
+    QString text;
+    bool emoji = false;
+    double x = 0;
+    double width = 0;
+};
+QVector<LaidRun> layoutRuns(const QFont &f, const QString &line, double *totalWidth)
+{
+    QVector<LaidRun> out;
+    double x = 0;
+    if (!hasEmoji(line)) {
+        const double w = QFontMetricsF(f).horizontalAdvance(line);
+        out << LaidRun{line, false, 0, w};
+        *totalWidth = w;
+        return out;
+    }
+    const QFontMetricsF fm(f), em(emojiFontFor(f));
+    for (const Run &r : emojiRuns(line)) {
+        const double w = r.emoji ? em.horizontalAdvance(r.text) : fm.horizontalAdvance(r.text);
+        out << LaidRun{r.text, r.emoji, x, w};
+        x += w;
+    }
+    *totalWidth = x;
+    return out;
+}
+} // namespace
 
 QRectF GraphicsRenderer::titleRect(const QSize &frame, const Clip &c)
 {
@@ -427,119 +519,324 @@ QRectF GraphicsRenderer::titleRect(const QSize &frame, const Clip &c)
     QFontMetricsF fm(f);
     const QStringList lines = (tp.text.isEmpty() ? QString(" ") : tp.text).split('\n');
     double maxW = 0;
-    for (const QString &l : lines)
-        maxW = std::max(maxW, fm.horizontalAdvance(l));
+    for (const QString &l : lines) {
+        double w = 0;
+        layoutRuns(f, l, &w);
+        maxW = std::max(maxW, w);
+    }
     const double lh = fm.height() * 1.1;
     const double blockH = lh * lines.size();
     const QPointF ctr(tp.x * frame.width(), tp.y * frame.height());
     QRectF block(ctr.x() - maxW / 2, ctr.y() - blockH / 2, maxW, blockH);
     if (tp.backgroundColor.alpha() > 0) {
-        const double pad = f.pixelSize() * 0.4;
+        const double pad = f.pixelSize() * tp.boxPaddingPct;
         block.adjust(-pad, -pad * 0.5, pad, pad * 0.5);
     }
-    return block;
+    return scaledAbout(block, std::max(0.01, c.transform.scale));
 }
 
 QRectF GraphicsRenderer::shapeRect(const QSize &frame, const Clip &c)
 {
     const ShapeProps &s = c.shape;
     QRectF r((s.x - s.w / 2) * frame.width(), (s.y - s.h / 2) * frame.height(), s.w * frame.width(), s.h * frame.height());
+    r = scaledAbout(r, std::max(0.01, c.transform.scale));
     if (s.shape == "line" && r.height() < 6) // keep thin lines grabbable
         r.adjust(0, -(6 - r.height()) / 2, 0, (6 - r.height()) / 2);
     return r;
 }
 
-void GraphicsRenderer::paintTitle(QPainter &p, const QSize &frame, const Clip &c, TimeUs t)
+namespace {
+double easeOutBounce(double x)
 {
-    const TitleProps &tp = c.title;
-    if (!c.containsTimeline(t) || tp.text.isEmpty())
+    x = clamp01(x);
+    const double n1 = 7.5625, d1 = 2.75;
+    if (x < 1 / d1)
+        return n1 * x * x;
+    if (x < 2 / d1) {
+        x -= 1.5 / d1;
+        return n1 * x * x + 0.75;
+    }
+    if (x < 2.5 / d1) {
+        x -= 2.25 / d1;
+        return n1 * x * x + 0.9375;
+    }
+    x -= 2.625 / d1;
+    return n1 * x * x + 0.984375;
+}
+double wobble(double t, int salt)
+{
+    return std::sin(t * 37.0 + salt) * 0.6 + std::sin(t * 23.0 + salt * 3) * 0.4;
+}
+} // namespace
+
+
+
+QStringList GraphicsRenderer::titleInAnimations()
+{
+    return {"none", "fade", "slideUp", "slideDown", "slideLeft", "slideRight", "pop", "zoom", "typewriter", "blur", "bounce", "spin", "drop"};
+}
+QStringList GraphicsRenderer::titleOutAnimations()
+{
+    return {"auto", "none", "fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoom", "pop", "blur"};
+}
+QStringList GraphicsRenderer::titleLoopAnimations()
+{
+    return {"", "pulse", "shake", "float", "wiggle", "blink", "glow"};
+}
+
+void GraphicsRenderer::paintTitle(QPainter &p, const QSize &frame, const Clip &cIn, TimeUs t)
+{
+    if (!cIn.containsTimeline(t) || cIn.title.text.isEmpty())
         return;
+    const Clip c = cIn.animatedAt(t);
+    const TitleProps &tp = c.title;
     double opacity = clipOpacity(c, t);
+    const double W = frame.width(), H = frame.height();
     const double ad = std::max<TimeUs>(1, tp.animationDuration);
     const double aIn = clamp01((t - c.start) / ad);
     const double aOut = clamp01((c.end() - t) / ad);
-    double dy = 0, scale = 1;
+    const double eIn = easeOutCubic(aIn), eOut = easeOutCubic(aOut);
+    double dx = 0, dy = 0, scale = 1, rot = 0, blurR = 0;
     QString text = tp.text;
-    if (tp.animation == "fade") {
-        opacity *= easeOutCubic(aIn) * easeOutCubic(aOut);
-    } else if (tp.animation == "slideUp") {
-        dy = (1 - easeOutCubic(aIn)) * frame.height() * 0.04;
-        opacity *= easeOutCubic(aIn) * easeOutCubic(aOut);
-    } else if (tp.animation == "pop") {
-        scale = 0.7 + 0.3 * easeOutBack(aIn);
-        opacity *= clamp01(aIn * 2) * easeOutCubic(aOut);
-    } else if (tp.animation == "typewriter") {
+    const QString &in = tp.animation;
+    QString outA = tp.animationOut;
+    if (outA == "auto")
+        outA = (in == "none") ? "none" : "fade";
+
+    if (in == "fade") {
+        opacity *= eIn;
+    } else if (in == "slideUp") {
+        dy += (1 - eIn) * H * 0.05;
+        opacity *= eIn;
+    } else if (in == "slideDown") {
+        dy -= (1 - eIn) * H * 0.05;
+        opacity *= eIn;
+    } else if (in == "slideLeft") {
+        dx += (1 - eIn) * W * 0.08;
+        opacity *= eIn;
+    } else if (in == "slideRight") {
+        dx -= (1 - eIn) * W * 0.08;
+        opacity *= eIn;
+    } else if (in == "pop") {
+        scale *= 0.7 + 0.3 * easeOutBack(aIn);
+        opacity *= clamp01(aIn * 2);
+    } else if (in == "zoom") {
+        scale *= 1.6 - 0.6 * eIn;
+        opacity *= eIn;
+    } else if (in == "typewriter") {
         const double typeDur = std::max<double>(ad, double(c.duration()) * 0.4);
         const int n = int(std::ceil(text.size() * clamp01((t - c.start) / typeDur)));
         text = text.left(std::max(0, n));
-        opacity *= easeOutCubic(aOut);
+    } else if (in == "blur") {
+        blurR += (1 - eIn) * tp.sizePct * H * 0.5;
+        opacity *= clamp01(aIn * 1.5);
+    } else if (in == "bounce") {
+        dy -= (1 - easeOutBounce(aIn)) * H * 0.15;
+        opacity *= clamp01(aIn * 4);
+    } else if (in == "spin") {
+        rot -= (1 - eIn) * 180;
+        scale *= 0.4 + 0.6 * eIn;
+        opacity *= eIn;
+    } else if (in == "drop") {
+        dy -= (1 - easeOutBack(aIn)) * H * 0.1;
+        opacity *= clamp01(aIn * 3);
     }
+
+    if (outA == "fade") {
+        opacity *= eOut;
+    } else if (outA == "slideUp") {
+        dy -= (1 - eOut) * H * 0.05;
+        opacity *= eOut;
+    } else if (outA == "slideDown") {
+        dy += (1 - eOut) * H * 0.05;
+        opacity *= eOut;
+    } else if (outA == "slideLeft") {
+        dx -= (1 - eOut) * W * 0.08;
+        opacity *= eOut;
+    } else if (outA == "slideRight") {
+        dx += (1 - eOut) * W * 0.08;
+        opacity *= eOut;
+    } else if (outA == "zoom") {
+        scale *= 1 + (1 - eOut) * 0.5;
+        opacity *= eOut;
+    } else if (outA == "pop") {
+        scale *= 0.7 + 0.3 * eOut;
+        opacity *= eOut;
+    } else if (outA == "blur") {
+        blurR += (1 - eOut) * tp.sizePct * H * 0.5;
+        opacity *= eOut;
+    }
+
+    const double s = double(t - c.start) / kUsPerSec;
+    double glow = 0;
+    if (tp.loop == "pulse")
+        scale *= 1 + 0.06 * std::sin(2 * M_PI * 1.2 * s);
+    else if (tp.loop == "shake") {
+        dx += wobble(s, 1) * W * 0.004;
+        dy += wobble(s, 2) * H * 0.004;
+        rot += wobble(s, 3) * 1.5;
+    } else if (tp.loop == "float")
+        dy += std::sin(2 * M_PI * 0.5 * s) * H * 0.012;
+    else if (tp.loop == "wiggle")
+        rot += std::sin(2 * M_PI * 2 * s) * 4;
+    else if (tp.loop == "blink")
+        opacity *= std::fmod(s, 1.0) < 0.7 ? 1.0 : 0.2;
+    else if (tp.loop == "glow")
+        glow = 0.55 + 0.45 * std::sin(2 * M_PI * 0.8 * s);
+
     if (opacity <= 0.001 || text.isEmpty())
         return;
+
+    // blur animations render into a layer that is blurred as a whole
+    if (blurR > 0.5) {
+        QImage layer(frame, QImage::Format_ARGB32_Premultiplied);
+        layer.fill(Qt::transparent);
+        {
+            QPainter q(&layer);
+            Clip noBlur = cIn;
+            noBlur.title.animation = in == "blur" ? QString("none") : in;
+            noBlur.title.animationOut = outA == "blur" ? QString("none") : outA;
+            paintTitle(q, frame, noBlur, t);
+        }
+        p.save();
+        p.setOpacity(p.opacity() * clamp01(in == "blur" ? clamp01(aIn * 1.5) : 1.0) * (outA == "blur" ? eOut : 1.0));
+        p.drawImage(0, 0, ImageFx::blurred(layer, blurR));
+        p.restore();
+        return;
+    }
 
     const QFont f = titleFont(tp, frame.height());
     QFontMetricsF fm(f);
     const QStringList lines = text.split('\n');
     const QStringList fullLines = tp.text.split('\n'); // stable layout during typewriter
     double maxW = 0;
-    for (const QString &l : fullLines)
-        maxW = std::max(maxW, fm.horizontalAdvance(l));
+    for (const QString &l : fullLines) {
+        double w = 0;
+        layoutRuns(f, l, &w);
+        maxW = std::max(maxW, w);
+    }
     const double lh = fm.height() * 1.1;
     const double blockH = lh * fullLines.size();
-    const double cx = tp.x * frame.width();
-    const double cy = tp.y * frame.height() + dy;
+    const double cx = tp.x * W;
+    const double cy = tp.y * H;
     const QRectF block(cx - maxW / 2, cy - blockH / 2, maxW, blockH);
 
     p.save();
     p.setRenderHint(QPainter::Antialiasing);
-    p.translate(cx, cy);
-    p.scale(scale, scale);
+    p.translate(cx + dx, cy + dy);
+    p.rotate(c.transform.rotation + rot);
+    const double k = std::max(0.01, c.transform.scale) * scale;
+    p.scale(k, k);
     p.translate(-cx, -cy);
-    p.setOpacity(opacity);
+    p.setOpacity(p.opacity() * opacity);
     if (tp.backgroundColor.alpha() > 0) {
-        const double pad = f.pixelSize() * 0.4;
+        const double pad = f.pixelSize() * tp.boxPaddingPct;
+        const double rad = f.pixelSize() * tp.boxRadiusPct;
         p.setPen(Qt::NoPen);
         p.setBrush(tp.backgroundColor);
-        p.drawRoundedRect(block.adjusted(-pad, -pad * 0.5, pad, pad * 0.5), pad * 0.4, pad * 0.4);
+        p.drawRoundedRect(block.adjusted(-pad, -pad * 0.5, pad, pad * 0.5), rad, rad);
     }
+    QPainterPath all;
+    struct EmojiDraw {
+        QPointF at;
+        QString text;
+        double width = 0;
+    };
+    QVector<EmojiDraw> emojis;
     for (int i = 0; i < lines.size(); ++i) {
-        const double lw = fm.horizontalAdvance(fullLines.value(i));
+        double lw = 0;
+        layoutRuns(f, fullLines.value(i), &lw);
         double x = block.left();
         if (tp.align == "center")
             x = cx - lw / 2;
         else if (tp.align == "right")
             x = block.right() - lw;
         const double baseline = block.top() + i * lh + (lh - fm.height()) / 2 + fm.ascent();
-        QPainterPath path;
-        path.addText(x, baseline, f, lines[i]);
+        double unused = 0;
+        for (const LaidRun &r : layoutRuns(f, lines[i], &unused)) {
+            if (r.emoji)
+                emojis << EmojiDraw{QPointF(x + r.x, baseline), r.text, r.width};
+            else
+                all.addText(x + r.x, baseline, f, r.text);
+        }
+    }
+    if (glow > 0) {
+        QColor gc = tp.gradientColor.alpha() > 0 ? tp.gradientColor : tp.color;
+        for (int i = 3; i >= 1; --i) {
+            gc.setAlphaF(0.18 * glow);
+            p.strokePath(all, QPen(gc, f.pixelSize() * 0.12 * i, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        }
+    }
+    if (tp.shadowColor.alpha() > 0) {
+        const double off = tp.shadowOffsetPct * f.pixelSize();
+        const QPainterPath sh = all.translated(off, off);
         if (tp.outlineColor.alpha() > 0 && tp.outlineWidthPct > 0)
-            p.strokePath(path, QPen(tp.outlineColor, tp.outlineWidthPct * f.pixelSize() * 2, Qt::SolidLine, Qt::RoundCap,
-                                    Qt::RoundJoin));
-        p.fillPath(path, tp.color);
+            p.strokePath(sh, QPen(tp.shadowColor, tp.outlineWidthPct * f.pixelSize() * 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.fillPath(sh, tp.shadowColor);
+    }
+    if (tp.outlineColor.alpha() > 0 && tp.outlineWidthPct > 0)
+        p.strokePath(all, QPen(tp.outlineColor, tp.outlineWidthPct * f.pixelSize() * 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    if (tp.gradientColor.alpha() > 0) {
+        QLinearGradient g(block.topLeft(), block.bottomLeft());
+        g.setColorAt(0.1, tp.color);
+        g.setColorAt(0.9, tp.gradientColor);
+        p.fillPath(all, g);
+    } else {
+        p.fillPath(all, tp.color);
+    }
+    if (!emojis.isEmpty()) {
+        // Colour glyphs are drawn untransformed into an image, which is then placed with the
+        // painter's transform (so rotation/scale animations work and nothing falls back to outlines).
+        for (const EmojiDraw &e : emojis) {
+            const double w = std::max(1.0, e.width);
+            const double h = fm.height();
+            const double ss = 1.0; // colour bitmap fonts scale poorly; draw at the final size
+            QImage img(std::max(1, int(std::ceil(w * ss))), std::max(1, int(std::ceil(h * ss))), QImage::Format_ARGB32_Premultiplied);
+            img.fill(Qt::transparent);
+            {
+                QPainter q(&img);
+                QFont big = emojiFontFor(f);
+                big.setPixelSize(std::max(6, int(std::lround(f.pixelSize() * ss))));
+                q.setFont(big);
+                q.setPen(tp.color);
+                q.drawText(QPointF(0, fm.ascent() * ss), e.text);
+            }
+            p.save();
+            p.setRenderHint(QPainter::SmoothPixmapTransform);
+            p.drawImage(QRectF(e.at.x(), e.at.y() - fm.ascent(), w, h), img);
+            p.restore();
+        }
     }
     p.restore();
 }
 
-void GraphicsRenderer::paintShape(QPainter &p, const QSize &frame, const Clip &c, TimeUs t)
+void GraphicsRenderer::paintShape(QPainter &p, const QSize &frame, const Clip &cIn, TimeUs t)
 {
-    if (!c.containsTimeline(t))
+    if (!cIn.containsTimeline(t))
         return;
+    const Clip c = cIn.animatedAt(t);
     const ShapeProps &s = c.shape;
     const double opacity = clipOpacity(c, t);
     if (opacity <= 0.001)
         return;
-    const QRectF r((s.x - s.w / 2) * frame.width(), (s.y - s.h / 2) * frame.height(), s.w * frame.width(),
-                   s.h * frame.height());
+    QRectF r((s.x - s.w / 2) * frame.width(), (s.y - s.h / 2) * frame.height(), s.w * frame.width(),
+             s.h * frame.height());
     p.save();
     p.setRenderHint(QPainter::Antialiasing);
-    p.setOpacity(opacity);
-    const double sw = s.strokeWidthPct * frame.height();
+    p.setOpacity(p.opacity() * opacity);
+    const QPointF ctr = r.center();
+    p.translate(ctr);
+    p.rotate(c.transform.rotation);
+    const double k = std::max(0.01, c.transform.scale);
+    p.scale(k, k);
+    p.translate(-ctr);
+    const double sw = s.strokeWidthPct * frame.height() / k;
     p.setPen(s.stroke.alpha() > 0 && sw > 0 ? QPen(s.stroke, sw) : QPen(Qt::NoPen));
     p.setBrush(s.fill);
     if (s.shape == "ellipse")
         p.drawEllipse(r);
     else if (s.shape == "arrow") {
-        // right-pointing arrow filling the box: shaft 40% of the height, head 35% of the width
+        // right-pointing arrow filling the box: shaft 38% of the height
         const double head = std::min(r.width() * 0.45, r.height() * 1.1);
         const double shaft = r.height() * 0.38;
         QPainterPath a;
@@ -560,12 +857,11 @@ void GraphicsRenderer::paintShape(QPainter &p, const QSize &frame, const Clip &c
         QPolygonF star;
         for (int i = 0; i < 10; ++i) {
             const double ang = -M_PI / 2 + i * M_PI / 5;
-            const double k = i % 2 ? 0.42 : 1.0;
-            star << QPointF(r.center().x() + std::cos(ang) * r.width() / 2 * k, r.center().y() + std::sin(ang) * r.height() / 2 * k);
+            const double kk = i % 2 ? 0.42 : 1.0;
+            star << QPointF(r.center().x() + std::cos(ang) * r.width() / 2 * kk, r.center().y() + std::sin(ang) * r.height() / 2 * kk);
         }
         p.drawPolygon(star);
-    }
-    else if (s.shape == "line") {
+    } else if (s.shape == "line") {
         p.setPen(QPen(s.fill, std::max(1.0, r.height())));
         p.drawLine(QPointF(r.left(), r.center().y()), QPointF(r.right(), r.center().y()));
     } else {
@@ -632,6 +928,26 @@ void OverlayScene::render(QPainter &p, const QSize &frame, TimeUs t) const
         else
             GraphicsRenderer::paintShape(p, frame, g.clip, t);
     }
+    for (const auto &c : captions) {
+        const CueInstance *ci = CaptionMapper::instanceAt(c.cues, t);
+        if (!ci)
+            continue;
+        CaptionRenderer::SpeakerInfo info;
+        const CaptionRenderer::SpeakerInfo *infoPtr = nullptr;
+        if (ci->speaker >= 0) {
+            for (const auto &s : speakers)
+                if (s.id == ci->speaker) {
+                    info.name = s.name;
+                    info.color = s.color;
+                    infoPtr = &info;
+                }
+        }
+        CaptionRenderer::paintCue(p, frame, c.style, *ci, t, infoPtr);
+    }
+}
+
+void OverlayScene::renderCaptions(QPainter &p, const QSize &frame, TimeUs t) const
+{
     for (const auto &c : captions) {
         const CueInstance *ci = CaptionMapper::instanceAt(c.cues, t);
         if (!ci)

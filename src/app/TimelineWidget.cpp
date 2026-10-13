@@ -1,4 +1,5 @@
 #include "TimelineWidget.h"
+#include "../media/ImageFx.h"
 #include "../captions/CaptionStyle.h"
 #include "../core/TimelineOps.h"
 #include "../media/MediaCache.h"
@@ -145,6 +146,8 @@ QRect TimelineWidget::clipRect(const Row &row, const Clip &c) const
 
 QColor TimelineWidget::colorFor(const Clip &c) const
 {
+    if (c.type == ClipType::Effect)
+        return QColor("#B0458C");
     if (c.type == ClipType::Title)
         return Theme::clipTitle();
     if (c.type == ClipType::Shape)
@@ -314,6 +317,19 @@ void TimelineWidget::paintRuler(QPainter &p)
         }
     }
     const Project &pr = m_doc->project();
+    for (const Marker &mk : pr.markers) {
+        const double x = xForTime(mk.t);
+        if (x < headerWidth() || x > viewport()->width())
+            continue;
+        p.setPen(Qt::NoPen);
+        p.setBrush(mk.color);
+        QPolygonF flag{{x, double(rh - 1)}, {x - 5, double(rh - 9)}, {x - 5, double(rh - 15)}, {x + 5, double(rh - 15)}, {x + 5, double(rh - 9)}};
+        p.drawPolygon(flag);
+        if (!mk.label.isEmpty() && m_pxPerSec > 20) {
+            p.setPen(mk.color);
+            p.drawText(QPointF(x + 7, rh - 4), mk.label);
+        }
+    }
     p.setPen(Theme::textDim());
     p.drawText(QRect(6, 0, headerWidth() - 8, rh), Qt::AlignVCenter | Qt::AlignLeft,
                formatTimecode(m_doc->playhead(), pr.canvas.fps));
@@ -502,10 +518,22 @@ void TimelineWidget::paintClip(QPainter &p, const Row &row, const Clip &c, const
             }
         }
     }
-    if (c.type == ClipType::Title || c.type == ClipType::Shape) {
+    if (c.type == ClipType::Title || c.type == ClipType::Shape || c.type == ClipType::Effect) {
         p.setPen(QColor(255, 255, 255, 200));
-        p.drawText(r.adjusted(6, 14, -4, 0), Qt::AlignLeft | Qt::AlignVCenter,
-                   c.type == ClipType::Title ? "T  " + c.title.text.simplified() : "■  " + c.shape.shape);
+        QString what;
+        if (c.type == ClipType::Title)
+            what = "T  " + c.title.text.simplified();
+        else if (c.type == ClipType::Shape)
+            what = "■  " + c.shape.shape;
+        else {
+            QStringList fx;
+            for (const EffectSpec &e : c.fx.effects)
+                fx << ImageFx::effectLabel(e.type);
+            if (!c.fx.look.isEmpty())
+                fx << "filter";
+            what = "✦  " + (fx.isEmpty() ? QString("adjustment") : fx.join(", "));
+        }
+        p.drawText(r.adjusted(6, 14, -4, 0), Qt::AlignLeft | Qt::AlignVCenter, what);
     }
     // fades
     const bool audioTrack = t.kind == TrackKind::Audio;
@@ -539,12 +567,52 @@ void TimelineWidget::paintClip(QPainter &p, const Row &row, const Clip &c, const
     QString label = c.name;
     if (std::abs(c.speed - 1.0) > 1e-3)
         label += QString("  %1×").arg(c.speed, 0, 'g', 3);
+    if (c.fx.speedCurve.isSet())
+        label += "  ⤳ curve";
+    if (c.type != ClipType::Effect && (!c.fx.effects.isEmpty() || !c.fx.look.isEmpty() || !c.fx.adjust.isIdentity()))
+        label = "fx · " + label;
+    if (c.fx.chroma.enabled || c.fx.mask.isSet())
+        label = "✂ " + label;
+    if (!c.fx.audio.isDefault())
+        label = "🎙 " + label;
     if (!c.linkId.isEmpty())
         label = "⧉ " + label;
     if (m && m->missing)
         label = "OFFLINE · " + label;
     p.drawText(r.adjusted(5, 0, -4, 0).topLeft() + QPoint(0, 11), QFontMetrics(f).elidedText(label, Qt::ElideRight, r.width() - 10));
+    // keyframe diamonds along the bottom edge
+    if (!c.fx.keyframes.isEmpty() && r.height() > 18) {
+        p.setPen(QPen(QColor(20, 20, 20, 200), 1));
+        const TimeUs ph = m_doc->playhead();
+        for (const Keyframe &k : c.fx.keyframes) {
+            const double x = r.left() + k.t / 1e6 * m_pxPerSec;
+            const double y = r.bottom() - 6;
+            const bool here = std::llabs(c.start + k.t - ph) <= 20 * kUsPerMs;
+            p.setBrush(here ? QColor("#FFD43B") : QColor(255, 255, 255, 230));
+            QPolygonF d{{x, y - 5}, {x + 5, y}, {x, y + 5}, {x - 5, y}};
+            p.drawPolygon(d);
+        }
+    }
     p.setClipping(false);
+    // transition marker at the clip start (bow tie straddling the cut)
+    if (c.fx.transitionIn.isSet()) {
+        const double half = c.fx.transitionIn.duration / 2e6 * m_pxPerSec;
+        const QRectF tr(r.left() - half, r.top() + 15, std::max(10.0, 2 * half), std::max(8, r.height() - 17));
+        QPainterPath bow;
+        bow.moveTo(tr.topLeft());
+        bow.lineTo(tr.bottomRight());
+        bow.lineTo(tr.topRight());
+        bow.lineTo(tr.bottomLeft());
+        bow.closeSubpath();
+        p.setPen(QPen(QColor(255, 255, 255, 220), 1));
+        p.setBrush(QColor(91, 140, 255, 170));
+        p.drawRoundedRect(tr, 3, 3);
+        p.setPen(Qt::white);
+        QFont tf = font();
+        tf.setPointSizeF(tf.pointSizeF() * 0.75);
+        p.setFont(tf);
+        p.drawText(tr, Qt::AlignCenter, "⇄");
+    }
     // fade handles
     if (r.width() > 30 && !ghost) {
         p.setBrush(Qt::white);
@@ -1143,7 +1211,7 @@ void TimelineWidget::showEmptyMenu(const QPoint &global, TimeUs at, int ti)
 
 void TimelineWidget::dragEnterEvent(QDragEnterEvent *e)
 {
-    if (e->mimeData()->hasFormat(kMediaMime) || e->mimeData()->hasUrls())
+    if (e->mimeData()->hasFormat(kMediaMime) || e->mimeData()->hasUrls() || e->mimeData()->hasFormat("application/x-shyftr-effect"))
         e->acceptProposedAction();
 }
 
@@ -1161,6 +1229,25 @@ void TimelineWidget::dropEvent(QDropEvent *e)
     const QString trackId = m_dropRow >= 0 ? m_doc->project().tracks[m_rows[m_dropRow].trackIndex].id : QString();
     m_dropTime = -1;
     m_dropRow = -1;
+    if (e->mimeData()->hasFormat("application/x-shyftr-effect")) {
+        const QString id = QString::fromUtf8(e->mimeData()->data("application/x-shyftr-effect"));
+        const Hit h = hitTest(e->position().toPoint());
+        QString target = h.clipId;
+        if (id.startsWith("tr:") && h.row >= 0) {
+            // a transition goes to the clip whose start (the cut) is nearest the drop point
+            const Track &t = m_doc->project().tracks[m_rows[h.row].trackIndex];
+            TimeUs best = TimeUs(0.6 * kUsPerSec);
+            for (int i = 1; i < t.clips.size(); ++i)
+                if (std::llabs(t.clips[i].start - at) < best) {
+                    best = std::llabs(t.clips[i].start - at);
+                    target = t.clips[i].id;
+                }
+        }
+        emit libraryItemDropped(id, target, at);
+        e->acceptProposedAction();
+        viewport()->update();
+        return;
+    }
     if (e->mimeData()->hasFormat(kMediaMime)) {
         const QStringList ids = QString::fromUtf8(e->mimeData()->data(kMediaMime)).split('\n', Qt::SkipEmptyParts);
         m_doc->apply("Add to timeline", [&](Project &p) {

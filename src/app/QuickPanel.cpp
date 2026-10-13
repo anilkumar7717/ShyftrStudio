@@ -86,6 +86,35 @@ QuickPanel::QuickPanel(Document *doc, QWidget *parent) : QWidget(parent), m_doc(
     auto *music = new QPushButton("Add background music…");
     music->setToolTip("Placed on its own track at −14 dB with fades, trimmed to your video");
     v->addWidget(music);
+    auto *tts = new QPushButton("Voice-over from text…");
+    tts->setToolTip("Text to speech with the voices on this computer");
+    v->addWidget(tts);
+    connect(tts, &QPushButton::clicked, this, [this]() { emit toolRequested("tts"); });
+
+    // creative extras (open the Library on the left)
+    {
+        auto *pop = new QLabel("Make it pop");
+        pop->setStyleSheet("font-weight: 700; margin-top: 6px;");
+        v->addWidget(pop);
+    }
+    {
+        QList<QWidget *> extras;
+        for (const auto &[label, cat] : QVector<QPair<QString, QString>>{{"Text", "Text"}, {"Stickers", "Stickers"}, {"Effects", "Effects"},
+                                                                          {"Transitions", "Transitions"}, {"Filters", "Filters"}}) {
+            auto *b = new QToolButton;
+            b->setText(label);
+            b->setMinimumWidth(64);
+            extras << b;
+            const QString c = cat;
+            connect(b, &QToolButton::clicked, this, [this, c]() { emit libraryRequested(c); });
+        }
+        auto *silence = new QToolButton;
+        silence->setText("Cut silences");
+        silence->setToolTip("Removes the quiet parts automatically");
+        connect(silence, &QToolButton::clicked, this, [this]() { emit toolRequested("silences"); });
+        extras << silence;
+        v->addWidget(flowRow(extras));
+    }
 
     // 5 format + look
     v->addWidget(stepTitle(5, "Format & look"));

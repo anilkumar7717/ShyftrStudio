@@ -4,6 +4,8 @@
 #include "captions/OverlayRenderer.h"
 #include "media/CanvasLayout.h"
 #include "media/ColorMath.h"
+#include "media/Compositor.h"
+#include "media/FrameReader.h"
 #include "media/ExportGraph.h"
 #include "media/ExportJob.h"
 #include "media/MediaCache.h"
@@ -345,6 +347,158 @@ private slots:
         QVERIFY(CanvasLayout::resetPosition(p, videoItem));
         QCOMPARE(p.findClip(vid)->transform.posX, 0.0);
         QCOMPARE(p.findClip(vid)->transform.scale, 1.0);
+    }
+
+    void compositorMatchesFilterGraph()
+    {
+        const QString v = makeTestVideo(m_tmp.path(), "cmp.mp4", 2.0, 640, 360, "25");
+        if (v.isEmpty())
+            QSKIP("FFmpeg not available");
+        Project p = makeEmptyProject("Cmp", CanvasSettings{640, 360, {25, 1}, 48000, Qt::black});
+        MediaAsset m;
+        m.id = "m";
+        QString err;
+        QVERIFY2(MediaProbe::probe(v, m, &err), qPrintable(err));
+        p.media << m;
+        const QString c = TimelineOps::addMediaClip(p, "m", p.tracks[0].id, 0);
+        Clip *cl = p.findClip(c);
+        cl->transform.cropL = 0.1;
+        cl->transform.scale = 0.8;
+        cl->transform.posX = 0.05;
+        cl->color.saturation = 0.5;
+        cl->color.exposure = 0.2;
+        TitleProps tp;
+        tp.text = "SAME";
+        tp.animation = "none";
+        tp.sizePct = 0.15;
+        TimelineOps::addTitleClip(p, p.tracks[1].id, 0, 2 * kUsPerSec, tp);
+        QVERIFY(!Compositor::projectNeedsCompositor(p));
+
+        ExportRequest req;
+        req.project = p;
+        req.projectDir = m_tmp.path() + "/cmp";
+        req.settings.width = 640;
+        req.settings.height = 360;
+        req.settings.fps = {25, 1};
+        req.settings.encoder = "software";
+        req.settings.crf = 4;
+        req.settings.speedPreset = "ultrafast";
+        req.settings.outputPath = m_tmp.path() + "/graph.mp4";
+        req.overlay = OverlayScene::build(p);
+        QVERIFY2(runExport(req, &err), qPrintable(err));
+        req.forceCompositor = true;
+        req.settings.outputPath = m_tmp.path() + "/comp.mp4";
+        QVERIFY2(runExport(req, &err), qPrintable(err));
+        for (double at : {0.4, 1.2}) {
+            const QImage a = extractFrame(m_tmp.path() + "/graph.mp4", at, m_tmp.path() + "/g.png");
+            const QImage b = extractFrame(m_tmp.path() + "/comp.mp4", at, m_tmp.path() + "/c.png");
+            QVERIFY(!a.isNull() && !b.isNull());
+            const double diff = meanAbsDiff(a, b);
+            QVERIFY2(diff < 8.0, qPrintable(QString("frame %1s differs by %2").arg(at).arg(diff)));
+        }
+    }
+
+    void compositorExportsTransitionsAndEffects()
+    {
+        const QString v1 = makeTestVideo(m_tmp.path(), "t1.mp4", 2.0, 640, 360, "30");
+        const QString v2 = makeTestVideo(m_tmp.path(), "t2.mp4", 2.0, 320, 240, "30");
+        if (v1.isEmpty() || v2.isEmpty())
+            QSKIP("FFmpeg not available");
+        Project p = makeEmptyProject("Fx", CanvasSettings{640, 360, {30, 1}, 48000, Qt::black});
+        QString err;
+        for (const QString &f : {v1, v2}) {
+            MediaAsset m;
+            m.id = newId();
+            QVERIFY2(MediaProbe::probe(f, m, &err), qPrintable(err));
+            p.media << m;
+        }
+        const QString a = TimelineOps::addMediaClip(p, p.media[0].id, p.tracks[0].id, 0);
+        const QString b = TimelineOps::addMediaClip(p, p.media[1].id, p.tracks[0].id, 2 * kUsPerSec);
+        Clip *cb = p.findClip(b);
+        cb->fx.transitionIn = {"slide-left", 600 * kUsPerMs};
+        cb->fx.effects = {EffectSpec{"vignette", 0.8, 1}};
+        cb->fx.background.mode = "blur";
+        Clip *ca = p.findClip(a);
+        ca->fx.keyframes = {Keyframe{0, 0, 0, 1, 0, 1, "linear"}, Keyframe{2 * kUsPerSec, 0, 0, 1.5, 10, 1, "linear"}};
+        ca->fx.adjust.hue = 40;
+        ClipFx layer;
+        layer.effects = {EffectSpec{"grain", 0.3, 1}};
+        TimelineOps::addEffectClip(p, p.tracks[1].id, 3 * kUsPerSec, kUsPerSec, layer, "Grain");
+        QVERIFY(Compositor::projectNeedsCompositor(p));
+
+        ExportRequest req;
+        req.project = p;
+        req.projectDir = m_tmp.path() + "/fx";
+        req.settings.width = 640;
+        req.settings.height = 360;
+        req.settings.fps = {30, 1};
+        req.settings.encoder = "software";
+        req.settings.crf = 4;
+        req.settings.speedPreset = "ultrafast";
+        req.settings.outputPath = m_tmp.path() + "/fx.mp4";
+        req.overlay = OverlayScene::build(p);
+        QVERIFY2(runExport(req, &err), qPrintable(err));
+        const QJsonObject info = probeJson(m_tmp.path() + "/fx.mp4");
+        QCOMPARE(info.value("streams").toArray()[0].toObject().value("nb_read_frames").toString().toLongLong(),
+                 usToFrameRound(p.duration(), {30, 1}));
+        // the exported frames are exactly what the compositor draws (minus encoding)
+        const OverlayScene scene = OverlayScene::build(p);
+        for (double at : {1.0, 2.0, 3.5}) {
+            const TimeUs t = TimeUs(std::llround(at * kUsPerSec));
+            FrameReader reader(p, QSize(640, 360));
+            QImage expected(640, 360, QImage::Format_ARGB32_Premultiplied);
+            Compositor::render(expected, p, scene, t, reader);
+            const QImage exported = extractFrame(m_tmp.path() + "/fx.mp4", at, m_tmp.path() + "/fx.png");
+            const double diff = meanAbsDiff(expected, exported);
+            QVERIFY2(diff < 6.0, qPrintable(QString("frame %1s differs by %2").arg(at).arg(diff)));
+        }
+        // mid-transition: half of A, half of B (not a plain cut)
+        FrameReader r1(p, QSize(640, 360)), r2(p, QSize(640, 360)), r3(p, QSize(640, 360));
+        QImage mid(640, 360, QImage::Format_ARGB32_Premultiplied), before(mid), after(mid);
+        Compositor::render(mid, p, scene, 2 * kUsPerSec, r1);
+        Compositor::render(before, p, scene, 1600 * kUsPerMs, r2);
+        Compositor::render(after, p, scene, 2400 * kUsPerMs, r3);
+        QVERIFY(meanAbsDiff(mid, before) > 5 && meanAbsDiff(mid, after) > 5);
+    }
+
+    void audioOnlyAndGifExports()
+    {
+        const QString v = makeTestVideo(m_tmp.path(), "ag.mp4", 1.5, 320, 180, "30");
+        if (v.isEmpty())
+            QSKIP("FFmpeg not available");
+        Project p = makeEmptyProject("AG", CanvasSettings{320, 180, {30, 1}, 48000, Qt::black});
+        MediaAsset m;
+        m.id = "m";
+        QString err;
+        QVERIFY2(MediaProbe::probe(v, m, &err), qPrintable(err));
+        p.media << m;
+        const QString c = TimelineOps::addMediaClip(p, "m", p.tracks[0].id, 0);
+        // voice effect + denoise on the linked audio clip
+        for (Clip *x : p.linkedClips(c)) {
+            x->fx.audio.voice = "deep";
+            x->fx.audio.denoise = true;
+        }
+        ExportRequest req;
+        req.project = p;
+        req.projectDir = m_tmp.path() + "/ag";
+        req.settings.width = 320;
+        req.settings.height = 180;
+        req.settings.fps = {30, 1};
+        req.settings.normalizeLoudness = true;
+        req.overlay = OverlayScene::build(p);
+        for (const QString &ext : QStringList{"wav", "m4a"}) {
+            req.settings.outputPath = m_tmp.path() + "/audio." + ext;
+            QVERIFY2(runExport(req, &err), qPrintable(err));
+            const QJsonArray streams = probeJson(req.settings.outputPath).value("streams").toArray();
+            QCOMPARE(streams.size(), 1);
+            QCOMPARE(streams[0].toObject().value("codec_type").toString(), QString("audio"));
+        }
+        req.settings.outputPath = m_tmp.path() + "/clip.gif";
+        QVERIFY2(runExport(req, &err), qPrintable(err));
+        QFile gif(req.settings.outputPath);
+        QVERIFY(gif.open(QIODevice::ReadOnly));
+        QVERIFY(gif.read(6).startsWith("GIF8"));
+        QVERIFY(!QFileInfo::exists(m_tmp.path() + "/clip.partial.mp4"));
     }
 
     void fullTimelineExport()

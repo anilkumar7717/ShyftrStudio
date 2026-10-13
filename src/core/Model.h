@@ -3,6 +3,8 @@
 // so mixed source frame rates never accumulate floating-point drift.
 #pragma once
 
+#include "Fx.h"
+
 #include <QColor>
 #include <QDateTime>
 #include <QJsonObject>
@@ -39,7 +41,7 @@ QString formatClock(TimeUs t, bool withMillis = true); // HH:MM:SS.mmm
 QString newId();
 
 enum class MediaKind { Video, Audio, Image };
-enum class ClipType { Media, Title, Shape };
+enum class ClipType { Media, Title, Shape, Effect }; // Effect = adjustment layer applying effects to the tracks below
 enum class TrackKind { Video, Audio, Caption };
 
 QString toString(MediaKind k);
@@ -112,8 +114,16 @@ struct TitleProps {
     QColor backgroundColor = QColor(0, 0, 0, 0);
     double x = 0.5, y = 0.5;          // center position as fraction of canvas
     QString align = "center";         // left | center | right
-    QString animation = "fade";       // none | fade | slideUp | pop | typewriter
+    QString animation = "fade";       // entry: none | fade | slideUp | slideDown | slideLeft | slideRight | pop | zoom | typewriter | blur | bounce | spin | drop
+    QString animationOut = "auto";    // auto (fade unless none) | none | fade | slideUp | slideDown | slideLeft | slideRight | zoom | pop | blur
+    QString loop;                     // "" | pulse | shake | float | wiggle | blink | glow
     TimeUs animationDuration = 400 * kUsPerMs;
+    QColor shadowColor = QColor(0, 0, 0, 0);
+    double shadowOffsetPct = 0.06;    // of font size
+    QColor gradientColor = QColor(0, 0, 0, 0); // bottom colour of a vertical gradient fill
+    double letterSpacingPct = 0;
+    double boxPaddingPct = 0.4;       // of font size
+    double boxRadiusPct = 0.16;       // of font size
 };
 
 struct ShapeProps {
@@ -143,12 +153,18 @@ struct Clip {
     AudioProps audio;
     TitleProps title;
     ShapeProps shape;
+    ClipFx fx;
 
     TimeUs duration() const;
     TimeUs end() const { return start + duration(); }
     TimeUs sourceToTimeline(TimeUs src) const;
     TimeUs timelineToSource(TimeUs t) const;
     bool containsTimeline(TimeUs t) const { return t >= start && t < end(); }
+    // The clip with keyframed values applied at timeline time t.
+    Clip animatedAt(TimeUs t) const;
+    // Static (un-keyframed) values in keyframe terms, and the reverse.
+    AnimatedValues baseValues() const;
+    void setBaseValues(const AnimatedValues &v);
 };
 
 struct Track {
@@ -166,6 +182,8 @@ struct Track {
     QString styleId = "bold-highlight-yellow";
     QJsonObject styleOverrides;
     bool burnIn = true;
+    // Audio tracks only: lower this track automatically while other audio (voice) plays.
+    bool duck = false;
 
     void sortClips();
     int indexOfClip(const QString &clipId) const;
@@ -232,6 +250,7 @@ struct Project {
     TimeUs playhead = 0;
     TimeUs inPoint = -1;
     TimeUs outPoint = -1;
+    QVector<Marker> markers;
     QString uiMode = "quick";
     QJsonObject exportSettings;
 

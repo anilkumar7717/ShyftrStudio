@@ -117,6 +117,16 @@ ExportDialog::ExportDialog(Document *doc, QWidget *parent) : QDialog(parent), m_
     m_srt = new QCheckBox("Also save .srt");
     m_vtt = new QCheckBox("Also save .vtt");
     f->addRow("Captions", flowRow({m_burn, m_srt, m_vtt}));
+    m_loud = new QCheckBox("Normalise loudness (−14 LUFS, like YouTube/Instagram)");
+    f->addRow("Sound", m_loud);
+    m_format = new QComboBox;
+    m_format->addItem("MP4 video", "mp4");
+    m_format->addItem("MOV video", "mov");
+    m_format->addItem("GIF animation", "gif");
+    m_format->addItem("MP3 audio only", "mp3");
+    m_format->addItem("WAV audio only", "wav");
+    m_format->addItem("M4A audio only", "m4a");
+    f->addRow("Format", m_format);
     auto *dest = new QHBoxLayout;
     m_path = new QLineEdit;
     auto *browse = new QPushButton("Choose…");
@@ -189,9 +199,27 @@ ExportDialog::ExportDialog(Document *doc, QWidget *parent) : QDialog(parent), m_
     connect(m_range, &QComboBox::currentIndexChanged, this, &ExportDialog::updateEstimate);
     connect(m_codec, &QComboBox::currentIndexChanged, this, &ExportDialog::updateEstimate);
     connect(browse, &QPushButton::clicked, this, [this]() {
-        const QString p = QFileDialog::getSaveFileName(this, "Export video", m_path->text(), "MP4 video (*.mp4);;QuickTime (*.mov)");
-        if (!p.isEmpty())
+        const QString p = QFileDialog::getSaveFileName(this, "Export", m_path->text(),
+                                                       "MP4 video (*.mp4);;QuickTime (*.mov);;GIF animation (*.gif);;MP3 audio (*.mp3);;"
+                                                       "WAV audio (*.wav);;M4A audio (*.m4a)");
+        if (!p.isEmpty()) {
             m_path->setText(p);
+            const int i = m_format->findData(QFileInfo(p).suffix().toLower());
+            if (i >= 0)
+                m_format->setCurrentIndex(i);
+        }
+    });
+    connect(m_format, &QComboBox::currentIndexChanged, this, [this](int) {
+        // keep the file name, change its extension
+        const QString ext = m_format->currentData().toString();
+        QString path = m_path->text().trimmed();
+        if (!path.isEmpty()) {
+            const QFileInfo fi(path);
+            m_path->setText(fi.absolutePath() + "/" + fi.completeBaseName() + "." + ext);
+        }
+        const bool audioOnly = ext == "mp3" || ext == "wav" || ext == "m4a";
+        for (QWidget *w : QList<QWidget *>{m_burn, m_codec, m_encoder, m_rateMode, m_crf, m_bitrate})
+            w->setEnabled(!audioOnly);
     });
     connect(m_export, &QPushButton::clicked, this, &ExportDialog::startExport);
     connect(m_cancel, &QPushButton::clicked, this, [this]() {
@@ -230,6 +258,13 @@ void ExportDialog::loadSettings(const ExportSettings &s)
     m_srt->setChecked(s.writeSrt);
     m_vtt->setChecked(s.writeVtt);
     m_path->setText(s.outputPath);
+    m_loud->setChecked(s.normalizeLoudness);
+    {
+        const int fi = m_format->findData(QFileInfo(s.outputPath).suffix().toLower());
+        m_format->blockSignals(true);
+        m_format->setCurrentIndex(std::max(0, fi));
+        m_format->blockSignals(false);
+    }
     if (m_doc->project().inPoint >= 0 && m_doc->project().outPoint > m_doc->project().inPoint)
         m_range->setCurrentIndex(1);
 }
@@ -280,6 +315,7 @@ ExportSettings ExportDialog::collect() const
     s.burnCaptions = m_burn->isChecked();
     s.writeSrt = m_srt->isChecked();
     s.writeVtt = m_vtt->isChecked();
+    s.normalizeLoudness = m_loud->isChecked();
     s.outputPath = m_path->text().trimmed();
     const Project &p = m_doc->project();
     const QString range = m_range->currentData().toString();
