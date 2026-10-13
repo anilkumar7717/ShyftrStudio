@@ -3,6 +3,7 @@
 #include "../core/Tools.h"
 #include "CaptionEngine.h"
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
@@ -164,7 +165,44 @@ QVector<ModelInfo> ModelManager::scan()
             mi.status = "invalid";
         out << mi;
     }
+    // Models shipped with the app (Windows installer / portable zip: <app>\models, macOS bundle:
+    // Contents/Resources/models). Read-only; a copy in AI_Models with the same name wins.
+    for (const QString &bdir : bundledDirs()) {
+        const auto bundled = QDir(bdir).entryInfoList({"*.bin", "*.gguf"}, QDir::Files, QDir::Name);
+        for (const QFileInfo &fi : bundled) {
+            if (std::any_of(out.begin(), out.end(), [&](const ModelInfo &m) { return m.file == fi.fileName(); }))
+                continue;
+            ModelInfo mi;
+            mi.file = fi.fileName();
+            mi.path = fi.absoluteFilePath();
+            mi.name = fi.completeBaseName();
+            mi.size = fi.size();
+            mi.mtime = fi.lastModified();
+            mi.addedAt = fi.lastModified();
+            mi.provenance = "Included with Shyftr Studio";
+            mi.license = "MIT (whisper.cpp / OpenAI Whisper)";
+            mi.bundled = true;
+            mi.isVad = mi.file.contains("silero", Qt::CaseInsensitive) || mi.file.contains("vad", Qt::CaseInsensitive);
+            QFile sidecar(mi.path + ".sha256");
+            if (sidecar.open(QIODevice::ReadOnly))
+                mi.sha256 = QString::fromLatin1(sidecar.readAll()).section(' ', 0, 0).trimmed().toLower();
+            QString formatErr;
+            mi.status = checkModelFile(mi.path, &formatErr) ? "verified" : "invalid";
+            out << mi;
+        }
+    }
     return out;
+}
+
+QStringList ModelManager::bundledDirs()
+{
+    const QString app = QCoreApplication::applicationDirPath();
+    QStringList dirs;
+    for (const QString &d : {app + "/models", app + "/../Resources/models", app + "/../share/shyftr-studio/models"})
+        if (QFileInfo(d).isDir())
+            dirs << QFileInfo(d).canonicalFilePath();
+    dirs.removeDuplicates();
+    return dirs;
 }
 
 QVector<ModelInfo> ModelManager::speechModels()
@@ -334,6 +372,9 @@ bool ModelManager::importModel(const QString &src, const QString &provenance, co
 
 bool ModelManager::verify(const QString &file, QString *error, const std::function<bool(qint64, qint64)> &progress)
 {
+    const ModelInfo found = find(file);
+    if (found.bundled)
+        return checkModelFile(found.path, error);
     const QString path = dir() + "/" + file;
     if (!QFileInfo::exists(path)) {
         if (error)
@@ -393,6 +434,11 @@ bool ModelManager::quickVerify(const QString &file, QString *error)
 bool ModelManager::remove(const QString &file, QString *error)
 {
     const QString path = dir() + "/" + file;
+    if (!QFileInfo::exists(path) && find(file).bundled) {
+        if (error)
+            *error = file + " is included with Shyftr Studio and can't be removed here. Uninstall the app to remove it.";
+        return false;
+    }
     if (QFileInfo::exists(path) && !QFile::remove(path)) {
         if (error)
             *error = "Could not delete " + path;

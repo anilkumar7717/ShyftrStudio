@@ -1,0 +1,148 @@
+# Builds the Windows app on GitHub's Windows machines and publishes, ready to use offline:
+#   ShyftrStudio-Setup.exe     installer (Start menu + desktop shortcut + uninstaller)
+#   ShyftrStudio-windows.zip   portable folder (unzip and run "Shyftr Studio.exe")
+#
+# Everything the app needs is downloaded and bundled - nothing to install afterwards:
+#   Qt 6 runtime + plugins, FFmpeg/ffprobe (checksum-verified), whisper-cli (built from source),
+#   speech model(s) (checksum-verified against Hugging Face), voice-activity model,
+#   and the Microsoft C++ runtime DLLs.
+# The package is self-tested: the app must start, and whisper must transcribe a sample.
+#
+# Runs on pushes to main/master, on version tags (v1.2.3 -> GitHub Release with both files),
+# or by hand: Actions tab -> windows-exe -> Run workflow (you can pick the speech models there).
+name: windows-exe
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: 'Speech models to bundle (comma separated: tiny, base, small, medium, large-v3-turbo, large-v3, or none). small = best for Hindi/Hinglish/Punjabi.'
+        default: 'small'
+        required: false
+
+permissions:
+  contents: write   # needed to attach files to a GitHub Release on tags
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_VERSION: '6.8.3'
+  WHISPER_VERSION: 'v1.9.5'
+  MODELS: ${{ github.event.inputs.models || 'small' }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MSVC environment (cl.exe, cmake, ninja)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: 'qtmultimedia'
+          cache: true
+
+      - name: Install Ninja and Inno Setup
+        shell: pwsh
+        run: |
+          choco install ninja innosetup -y --no-progress
+          if ($LASTEXITCODE) { exit 1 }
+
+      # Big downloads/builds are cached between runs; FFmpeg is re-downloaded each run to pick up fixes.
+      - name: Cache whisper-cli build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .deps/whisper
+            .deps/jfk.wav
+          key: whisper-${{ env.WHISPER_VERSION }}-msvc-x64-v2
+
+      - name: Cache speech models
+        uses: actions/cache@v4
+        with:
+          path: .deps/models
+          key: models-${{ env.MODELS }}-v2
+
+      - name: Download FFmpeg, build whisper-cli, download models and C++ runtime
+        shell: pwsh
+        run: ./scripts/windows/fetch-deps.ps1 -Models "$env:MODELS" -WhisperVersion "$env:WHISPER_VERSION"
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+          if ($LASTEXITCODE) { exit 1 }
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        continue-on-error: true   # a test failure is reported but still produces the downloads
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $env:PATH = "$PWD\.deps\ffmpeg;$PWD\.deps\whisper;$env:PATH"
+          ctest --test-dir build --output-on-failure
+          if ($LASTEXITCODE) { exit 1 }
+
+      - name: Package and self-test
+        shell: pwsh
+        run: ./scripts/windows/package.ps1 -QtDir "$env:QT_ROOT_DIR"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $ver = if ($env:GITHUB_REF -like 'refs/tags/v*') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '0.1.0' }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$ver" installer\windows\ShyftrStudio.iss
+          if ($LASTEXITCODE) { exit 1 }
+          Get-ChildItem dist -File | ForEach-Object { "{0,-32} {1,8:N0} MB" -f $_.Name, ($_.Length / 1MB) }
+
+      - name: Test the installer (silent install, start, uninstall)
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\ShyftrInstallTest"
+          $p = Start-Process dist\ShyftrStudio-Setup.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$dir`"" -Wait -PassThru
+          if ($p.ExitCode) { Write-Error "Installer exit code $($p.ExitCode)"; exit 1 }
+          foreach ($f in "Shyftr Studio.exe", "ffmpeg.exe", "ffprobe.exe", "whisper-cli.exe") {
+            if (-not (Test-Path "$dir\$f")) { Write-Error "Installer did not install $f"; exit 1 }
+          }
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:SHYFTR_STUDIO_ROOT = "$env:RUNNER_TEMP\shyftr-root"
+          $app = Start-Process "$dir\Shyftr Studio.exe" -PassThru
+          Start-Sleep -Seconds 12
+          if ($app.HasExited) { Write-Error "Installed app exited at start-up (code $($app.ExitCode))"; exit 1 }
+          Stop-Process -Id $app.Id -Force
+          Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES" -Wait
+          Write-Host "Installer test passed"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShyftrStudio-windows
+          path: |
+            dist/ShyftrStudio-Setup.exe
+            dist/ShyftrStudio-windows.zip
+          retention-days: 30
+          compression-level: 0   # already compressed
+
+      - name: Attach to GitHub Release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ShyftrStudio-Setup.exe
+            dist/ShyftrStudio-windows.zip

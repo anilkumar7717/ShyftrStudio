@@ -36,6 +36,7 @@ struct ModelInfo {
     QString provenance;  // where the file came from (user supplied)
     QString license;
     bool isVad = false;
+    bool bundled = false; // shipped read-only next to the app
     QString status;      // "verified", "unverified", "changed", "missing"
 };
 
@@ -70,6 +71,8 @@ public:
     };
     static QVector<CatalogEntry> catalog();
     static QString describeSize(qint64 bytes);
+    // Read-only model folders shipped with the app (e.g. <app>/models on Windows).
+    static QStringList bundledDirs();
 
 private:
     bool saveManifest(const QVector<ModelInfo> &models) const;

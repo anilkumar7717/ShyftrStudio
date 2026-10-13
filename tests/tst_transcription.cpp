@@ -89,6 +89,29 @@ private slots:
         QVERIFY(mm.speechModels().isEmpty());
     }
 
+    void bundledModelsAreFoundAndProtected()
+    {
+        const QString bdir = QCoreApplication::applicationDirPath() + "/models";
+        QDir().mkpath(bdir);
+        const QString path = bdir + "/ggml-bundledtest.bin";
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("lmgg");
+            f.resize(21LL << 20);
+        }
+        const ModelInfo m = ModelManager::instance().find("ggml-bundledtest.bin");
+        QVERIFY(m.bundled);
+        QCOMPARE(m.status, QString("verified"));
+        QString err;
+        QVERIFY(ModelManager::instance().quickVerify("ggml-bundledtest.bin", &err));
+        QVERIFY(!ModelManager::instance().remove("ggml-bundledtest.bin", &err));
+        QVERIFY(QFileInfo::exists(path));
+        QFile::remove(path);
+        QDir(bdir).rmdir(".");
+        QVERIFY(ModelManager::instance().find("ggml-bundledtest.bin").path.isEmpty());
+    }
+
     void jobReportsMissingModelClearly()
     {
         TranscriptionJob job;

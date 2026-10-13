@@ -21,27 +21,38 @@ The app finds Homebrew's `ffmpeg`, `ffprobe` and `whisper-cli` in `/opt/homebrew
 Homebrew's whisper.cpp is built with Metal, so transcription uses the Apple GPU unless *Preferences → Performance → Use GPU* is off.
 
 ## Windows 10/11 (x64): make the .exe
-Build on a Windows PC (a Mac can't produce the Windows .exe). Install once: Visual Studio 2022 Build Tools ("Desktop development with C++"), Qt 6.8 for MSVC 2022 64-bit with the **Qt Multimedia** module, CMake and Ninja (`winget install Kitware.CMake Ninja-build.Ninja`), and FFmpeg (`winget install Gyan.FFmpeg`).
+The result is fully self-contained: Qt, FFmpeg + ffprobe, whisper-cli, the speech model(s), the voice-activity model and the Microsoft C++ runtime are all bundled, so the person installing it needs nothing else. Text-to-speech uses the voices built into Windows.
 
-Open **x64 Native Tools Command Prompt for VS 2022**, go to the project folder and run:
-```bat
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -QtDir C:\Qt\6.8.3\msvc2022_64
-```
-This builds, runs the tests (add `-SkipTests` to skip them) and creates `dist\ShyftrStudio\Shyftr Studio.exe` with every DLL it needs, plus `dist\ShyftrStudio-windows.zip` to share. FFmpeg, ffprobe and whisper-cli are copied in when they're on PATH; otherwise put them next to the .exe or set their paths in Preferences → Tools.
+### Option A: let GitHub build it (no Windows PC needed)
+The workflow `.github/workflows/windows.yml` runs on GitHub's Windows machines and:
+1. installs Qt 6.8 (with Qt Multimedia), Ninja and Inno Setup;
+2. downloads the newest stable FFmpeg GPL build and checks its SHA-256, then checks it has every filter/encoder the editor uses;
+3. builds whisper-cli from whisper.cpp source (portable x64 code);
+4. downloads the speech model(s) (default `small`) and checks their SHA-256 against Hugging Face;
+5. builds the app, runs the tests, assembles the folder, and self-tests it (the app must start; whisper must transcribe a sample clip);
+6. builds the installer, then silently installs, starts and uninstalls it as a final test.
 
-### No Windows PC? Let GitHub build it
-The workflow `windows.yml` builds everything on GitHub's Windows machines. It bundles Qt, FFmpeg and a whisper-cli built from source, and produces two downloads:
+It produces two downloads:
+- **ShyftrStudio-Setup.exe**: installer with Start-menu and desktop shortcuts and an uninstaller.
 - **ShyftrStudio-windows.zip**: portable; unzip it and run `Shyftr Studio.exe`.
-- **ShyftrStudio-Setup.exe**: an installer with Start-menu and desktop shortcuts and an uninstaller.
 
 One-time setup on the Mac:
 ```bash
 cd ~/Projects/ShyftrStudio
-bash scripts/install-workflows.sh      # copies ci/workflows/*.yml into .github/workflows/
+bash scripts/install-workflows.sh      # makes sure .github/workflows/ has the latest workflow files
 git init -b main && git add . && git commit -m "Shyftr Studio"
 gh repo create shyftr-studio --private --source . --push   # or create the repo on github.com and git push
 ```
-Each push to `main` runs the build (about 20–30 minutes the first time). Open the repository on GitHub → **Actions** → the latest **windows-exe** run → **Artifacts** → *ShyftrStudio-windows*. You can also start it by hand there with **Run workflow**. To publish a release, push a version tag (`git tag v0.1.0 && git push --tags`): both files are attached to a GitHub Release automatically.
+Each push to `main` runs the build (about 30–40 minutes the first time, faster later thanks to caching). Open the repository on GitHub → **Actions** → the latest **windows-exe** run → **Artifacts** → *ShyftrStudio-windows*. To choose which speech models to bundle, start it by hand with **Run workflow** and type e.g. `small,base` (or `none`; `large-v3` makes a ~3.5 GB installer). To publish a release, push a version tag (`git tag v0.1.0 && git push --tags`): both files are attached to a GitHub Release automatically.
+
+### Option B: build on a Windows PC
+Install once: **Visual Studio 2022** (Community is free) with "Desktop development with C++", **Git for Windows**, and **Python 3** (only used to download Qt if you don't have it). Then open **x64 Native Tools Command Prompt for VS 2022**, go to the project folder and run:
+```bat
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
+```
+It downloads Qt (into `C:\Qt`, if not already there), FFmpeg, whisper.cpp, the speech model and Inno Setup (via winget), then builds, tests and packages everything into `dist\`. Options: `-QtDir C:\Qt\6.8.3\msvc2022_64` to use your own Qt, `-Models small,base` (or `none`), `-SkipTests`, `-NoInstaller`. Downloads are kept in `.deps\`, so re-runs are quick.
+
+The pieces can also be run separately: `scripts\windows\fetch-deps.ps1` (downloads) and `scripts\windows\package.ps1 -QtDir ...` (assemble + self-test).
 
 ## Options
 | CMake option | Default | Meaning |

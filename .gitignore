@@ -5,3 +5,4 @@ build-*/
 CMakeUserPresets.json
 dist/
 *.bin
+.deps/
