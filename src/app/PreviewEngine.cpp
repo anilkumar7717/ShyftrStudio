@@ -33,6 +33,9 @@ PreviewEngine::PreviewEngine(Document *doc, QObject *parent) : QObject(parent), 
     m_composeTimer.setSingleShot(true);
     m_composeTimer.setInterval(0);
     connect(&m_composeTimer, &QTimer::timeout, this, [this]() { compose(m_doc->playhead()); });
+    m_invalidateTimer.setSingleShot(true);
+    m_invalidateTimer.setInterval(0);
+    connect(&m_invalidateTimer, &QTimer::timeout, this, &PreviewEngine::doInvalidate);
     connect(doc, &Document::projectChanged, this, &PreviewEngine::invalidate);
     connect(doc, &Document::projectReset, this, [this]() {
         pause();
@@ -84,9 +87,26 @@ void PreviewEngine::setShowSafeArea(bool on)
 
 void PreviewEngine::invalidate()
 {
-    if (!m_doc->isOpen())
+    // Edits can arrive many times per frame (slider drags, on-video drags): mark the overlay
+    // stale and do the work once, on the next pass of the event loop.
+    m_overlayDirty = true;
+    if (!m_invalidateTimer.isActive())
+        m_invalidateTimer.start();
+}
+
+void PreviewEngine::ensureOverlay() const
+{
+    if (!m_overlayDirty || !m_doc->isOpen())
         return;
     m_overlay = OverlayScene::build(m_doc->project());
+    m_overlayDirty = false;
+}
+
+void PreviewEngine::doInvalidate()
+{
+    if (!m_doc->isOpen())
+        return;
+    ensureOverlay();
     syncSlots(m_doc->playhead(), m_playing);
     scheduleCompose();
 }
@@ -465,6 +485,7 @@ QImage PreviewEngine::frame(const Clip &clip, const MediaAsset &media, TimeUs)
 QImage PreviewEngine::renderStill(TimeUs t, QSize size, FrameSource &source) const
 {
     QImage canvas(size, QImage::Format_ARGB32_Premultiplied);
+    ensureOverlay();
     Compositor::render(canvas, m_doc->project(), m_overlay, t, source);
     return canvas;
 }
@@ -476,6 +497,7 @@ void PreviewEngine::compose(TimeUs t)
     m_lastComposeT = t;
     const QSize out = outputSize();
     QImage canvas(out, QImage::Format_ARGB32_Premultiplied);
+    ensureOverlay();
     Compositor::render(canvas, m_doc->project(), m_overlay, t, *this);
     if (m_safeArea) {
         QPainter painter(&canvas);

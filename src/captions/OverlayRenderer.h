@@ -21,6 +21,8 @@ public:
                          const SpeakerInfo *speaker = nullptr);
     // Bounding rect of the cue block (for hit-testing / safe-area checks)
     static QRectF cueRect(const QSize &frame, const CaptionStyle &style, const CueInstance &cue);
+    // The box actually drawn at time t (one-word-at-a-time styles show only the active word).
+    static QRectF cueRect(const QSize &frame, const CaptionStyle &style, const CueInstance &cue, TimeUs t);
     static QFont fontFor(const CaptionStyle &style, int frameHeight);
 };
 

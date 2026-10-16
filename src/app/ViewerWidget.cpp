@@ -1,4 +1,8 @@
 #include "ViewerWidget.h"
+#include <QTimer>
+#include <QApplication>
+#include <QPlainTextEdit>
+#include "TextToolbar.h"
 #include "../core/Settings.h"
 #include "../core/TimelineOps.h"
 #include "PreviewEngine.h"
@@ -113,10 +117,19 @@ const CanvasLayout::Item *ViewerCanvas::itemAt(const QVector<CanvasLayout::Item>
     return nullptr;
 }
 
+QRect ViewerCanvas::widgetRectForClip(const QString &clipId)
+{
+    for (const auto &it : items())
+        if (it.clipId == clipId)
+            return widgetRectFor(it.rect);
+    return {};
+}
+
 bool ViewerCanvas::isSelected(const CanvasLayout::Item &it) const
 {
     if (it.kind == CanvasLayout::Item::Caption)
-        return !m_selCaptionTrack.isEmpty() && it.trackId == m_selCaptionTrack;
+        return !m_selCaptionTrack.isEmpty() && it.trackId == m_selCaptionTrack
+               && (Settings::instance().captionDragAll || it.cueIndex == m_selCue);
     return !m_selClip.isEmpty() && it.clipId == m_selClip;
 }
 
@@ -142,13 +155,14 @@ void ViewerCanvas::select(const CanvasLayout::Item &it)
     using K = CanvasLayout::Item;
     if (it.kind == K::Caption) {
         m_selCaptionTrack = it.trackId;
+        m_selCue = it.cueIndex;
         m_selClip.clear();
         if (!m_doc->selectedClips().isEmpty())
             m_doc->setSelectedClips({}); // so Delete never removes a clip selected earlier
         m_doc->setSelectedCue(it.trackId, it.cueIndex);
-        emit statusMessage(it.cueHasOwnPosition
-                               ? "This caption has its own position — drag to move it, or right-click → Reset position to rejoin the others"
-                               : "Captions selected — drag to move all captions · Alt/Option+drag moves only this one · drag a corner to resize · double-click to edit");
+        emit statusMessage(Settings::instance().captionDragAll
+                               ? "Caption selected — drag moves ALL captions · Alt/Option+drag moves only this one · right-click to change"
+                               : "Caption selected — drag moves only THIS caption · Alt/Option+drag moves all captions · drag a corner to resize · double-click to edit");
     } else {
         m_selCaptionTrack.clear();
         m_selClip = it.clipId;
@@ -316,7 +330,7 @@ void ViewerCanvas::mousePressEvent(QMouseEvent *e)
             emit pauseRequested();
             m_corner = c;
             m_drag = Drag::Resize;
-            m_grab = CanvasLayout::grab(m_doc->project(), sel, false);
+            m_grab = CanvasLayout::grab(m_doc->project(), sel, captionPerCue(e->modifiers()));
             m_startRect = sel.rect;
             ++m_serial;
             return;
@@ -341,7 +355,7 @@ void ViewerCanvas::mousePressEvent(QMouseEvent *e)
         return;
     emit pauseRequested();
     m_drag = Drag::Move;
-    m_grab = CanvasLayout::grab(m_doc->project(), *it, e->modifiers() & Qt::AltModifier);
+    m_grab = CanvasLayout::grab(m_doc->project(), *it, captionPerCue(e->modifiers()));
     m_startRect = it->rect;
     ++m_serial;
 }
@@ -441,7 +455,7 @@ void ViewerCanvas::mouseMoveEvent(QMouseEvent *e)
             const QPointF c = m_startRect.center();
             const double d0 = std::max(4.0, QLineF(c, toCanvas(m_pressPos)).length());
             const double factor = QLineF(c, pt).length() / d0;
-            const QString what = g.item.kind == CanvasLayout::Item::Caption ? "Resize captions"
+            const QString what = g.item.kind == CanvasLayout::Item::Caption ? (g.perCue ? "Resize caption" : "Resize captions")
                                  : g.item.kind == CanvasLayout::Item::Title ? "Resize title"
                                                                             : "Scale video";
             scheduleApply(what, [g, factor](Project &pr) { return CanvasLayout::scale(pr, g, factor); });
@@ -497,6 +511,12 @@ void ViewerCanvas::mouseDoubleClickEvent(QMouseEvent *e)
         emit editRequested(QString(), QRect());
 }
 
+bool ViewerCanvas::captionPerCue(Qt::KeyboardModifiers mods) const
+{
+    const bool alt = mods & Qt::AltModifier;
+    return Settings::instance().captionDragAll ? alt : !alt;
+}
+
 void ViewerCanvas::contextMenuEvent(QContextMenuEvent *e)
 {
     if (!m_doc->isOpen())
@@ -515,17 +535,52 @@ void ViewerCanvas::contextMenuEvent(QContextMenuEvent *e)
         });
         menu.addSeparator();
     }
-    QAction *resetPos = menu.addAction(it.kind == K::Caption && it.cueHasOwnPosition ? "Reset this caption's position"
-                                       : it.kind == K::Caption                     ? "Reset caption position"
-                                                                                   : "Reset position (centre)");
-    connect(resetPos, &QAction::triggered, this, [this, it]() {
-        m_doc->apply("Reset position", [it](Project &p) { return CanvasLayout::resetPosition(p, it); });
-    });
-    if (it.kind != K::Shape) {
-        QAction *resetSize = menu.addAction(it.kind == K::Media ? "Reset scale (100%)" : "Reset size");
-        connect(resetSize, &QAction::triggered, this, [this, it]() {
-            m_doc->apply("Reset size", [it](Project &p) { return CanvasLayout::resetSize(p, it); });
+    if (it.kind == K::Caption) {
+        // what a plain drag on a caption does (remembered); Alt/Option does the other one
+        QMenu *mode = menu.addMenu("Dragging a caption moves");
+        QAction *one = mode->addAction("Only that caption");
+        QAction *all = mode->addAction("All captions together");
+        one->setCheckable(true);
+        all->setCheckable(true);
+        (Settings::instance().captionDragAll ? all : one)->setChecked(true);
+        connect(one, &QAction::triggered, this, []() {
+            Settings::instance().captionDragAll = false;
+            Settings::instance().save();
         });
+        connect(all, &QAction::triggered, this, []() {
+            Settings::instance().captionDragAll = true;
+            Settings::instance().save();
+        });
+        menu.addSeparator();
+        QAction *rp = menu.addAction("Reset this caption's position");
+        rp->setEnabled(it.cueHasOwnPosition);
+        connect(rp, &QAction::triggered, this, [this, it]() {
+            m_doc->apply("Reset caption position", [it](Project &p) { return CanvasLayout::resetPosition(p, it, true); });
+        });
+        QAction *same = menu.addAction("Put all captions at this position");
+        connect(same, &QAction::triggered, this, [this, it]() {
+            m_doc->apply("Caption position for all", [it](Project &p) { return CanvasLayout::applyCaptionPositionToAll(p, it); });
+        });
+        menu.addAction("Reset all caption positions", this, [this, it]() {
+            m_doc->apply("Reset caption positions", [it](Project &p) { return CanvasLayout::resetPosition(p, it, false); });
+        });
+        menu.addAction("Reset this caption's size", this, [this, it]() {
+            m_doc->apply("Reset caption size", [it](Project &p) { return CanvasLayout::resetSize(p, it, true); });
+        });
+        menu.addAction("Reset all caption sizes", this, [this, it]() {
+            m_doc->apply("Reset caption sizes", [it](Project &p) { return CanvasLayout::resetSize(p, it, false); });
+        });
+    } else {
+        QAction *resetPos = menu.addAction("Reset position (centre)");
+        connect(resetPos, &QAction::triggered, this, [this, it]() {
+            m_doc->apply("Reset position", [it](Project &p) { return CanvasLayout::resetPosition(p, it); });
+        });
+        if (it.kind != K::Shape) {
+            QAction *resetSize = menu.addAction(it.kind == K::Media ? "Reset scale (100%)" : "Reset size");
+            connect(resetSize, &QAction::triggered, this, [this, it]() {
+                m_doc->apply("Reset size", [it](Project &p) { return CanvasLayout::resetSize(p, it); });
+            });
+        }
     }
     if (it.kind == K::Title || it.kind == K::Shape) {
         menu.addSeparator();
@@ -589,6 +644,19 @@ void ViewerCanvas::dropEvent(QDropEvent *e)
         const QPointF n(std::clamp((e->position().x() - r.left()) / std::max(1.0, r.width()), 0.0, 1.0),
                         std::clamp((e->position().y() - r.top()) / std::max(1.0, r.height()), 0.0, 1.0));
         e->acceptProposedAction();
+        if (id.startsWith("textstyle:")) {
+            // dropped on a text: style that text (and only that one); elsewhere: a new text there
+            const auto list = items();
+            const auto *it = itemAt(list, e->position());
+            if (it && it->kind == CanvasLayout::Item::Title) {
+                select(*it);
+                emit effectDropped(id, QPointF(-1, -1));
+            } else {
+                m_doc->setSelectedClips({});
+                emit effectDropped(id, n);
+            }
+            return;
+        }
         emit effectDropped(id, n);
         return;
     }
@@ -635,6 +703,12 @@ ViewerWidget::ViewerWidget(Document *doc, PreviewEngine *engine, QWidget *parent
     m_info = new QLabel;
     m_info->setObjectName("hint");
     h->addWidget(m_info);
+    auto *addText = new QToolButton;
+    addText->setText("+ Text");
+    addText->setToolTip("Add text at the playhead and type it on the video (T)");
+    addText->setAccessibleName("Add text");
+    h->addWidget(addText);
+    connect(addText, &QToolButton::clicked, this, &ViewerWidget::addTextRequested);
     auto *safe = new QToolButton;
     safe->setText("Safe area");
     safe->setCheckable(true);
@@ -655,6 +729,34 @@ ViewerWidget::ViewerWidget(Document *doc, PreviewEngine *engine, QWidget *parent
         m_play->setIcon(style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
     });
     connect(m_play, &QToolButton::clicked, engine, &PreviewEngine::togglePlay);
+
+    // formatting bar for the one selected text
+    m_textBar = new TextToolbar(doc, m_canvas);
+    auto syncTextBar = [this]() {
+        const QStringList sel = m_doc->selectedClips();
+        const Clip *c = sel.size() == 1 ? m_doc->project().findClip(sel.first()) : nullptr;
+        if (c && c->type == ClipType::Title && !isEditingText()) {
+            if (m_textBar->clipId() != c->id)
+                m_textBar->setClip(c->id);
+            m_textBar->show();
+            m_textBar->raise();
+            layoutTextBar();
+        } else {
+            m_textBar->hide();
+            if (!c)
+                m_textBar->setClip({});
+        }
+    };
+    connect(doc, &Document::selectionChanged, this, syncTextBar);
+    connect(doc, &Document::projectChanged, this, [this, syncTextBar]() {
+        syncTextBar();
+        QTimer::singleShot(0, this, [this]() { layoutTextBar(); });
+    });
+    connect(doc, &Document::playheadChanged, this, [this]() {
+        if (m_textBar->isVisible())
+            layoutTextBar();
+    });
+    connect(m_textBar, &TextToolbar::editTextRequested, this, &ViewerWidget::requestTitleEdit);
     connect(back, &QToolButton::clicked, this, [this]() { m_engine->stepFrames(-1); });
     connect(fwd, &QToolButton::clicked, this, [this]() { m_engine->stepFrames(1); });
     connect(start, &QToolButton::clicked, this, [this]() { m_engine->seek(0); });
@@ -712,8 +814,115 @@ void ViewerWidget::startInlineEdit(const QString &text, const std::function<void
     m_editor->selectAll();
 }
 
+bool ViewerWidget::isEditingText() const
+{
+    return m_textEditor && m_textEditor->isVisible();
+}
+
+void ViewerWidget::requestTitleEdit(const QString &clipId)
+{
+    const Clip *c = m_doc->project().findClip(clipId);
+    if (!c || c->type != ClipType::Title)
+        return;
+    // make sure the text is fully on screen (past its entry animation) before editing it
+    const TimeUs settled = c->title.animation == "none" ? 0 : c->title.animationDuration;
+    const TimeUs ph = m_doc->playhead();
+    if (!c->containsTimeline(ph) || ph < c->start + settled)
+        m_doc->setPlayhead(c->start + std::min<TimeUs>(std::max<TimeUs>(settled, 0) + frameDurationUs(m_doc->project().canvas.fps),
+                                                       c->duration() / 2));
+    emit titleEditRequested(clipId, m_canvas->widgetRectForClip(clipId));
+}
+
+void ViewerWidget::layoutTextBar()
+{
+    if (!m_textBar || !m_textBar->isVisible())
+        return;
+    m_textBar->adjustSize();
+    const QSize sz = m_textBar->sizeHint();
+    const int w = std::min(sz.width(), m_canvas->width() - 8);
+    const QRect img = m_canvas->imageRect().toRect();
+    const QRect text = m_canvas->widgetRectForClip(m_textBar->clipId());
+    int y = std::max(4, img.top() + 6);
+    // keep out of the way of the text being formatted: go below it when it sits at the top
+    if (text.isValid() && text.top() < y + sz.height() + 6)
+        y = std::min(m_canvas->height() - sz.height() - 4, std::max(text.bottom() + 8, img.bottom() - sz.height() - 6));
+    m_textBar->setGeometry((m_canvas->width() - w) / 2, y, w, sz.height());
+}
+
+void ViewerWidget::startTextEdit(const QString &text, const QFont &font, const QColor &color,
+                                 const std::function<void(const QString &)> &live, const std::function<void(bool)> &done,
+                                 const QRect &anchor)
+{
+    if (isEditingText())
+        finishTextEdit(true);
+    m_editAnchor = anchor;
+    if (!m_textEditor) {
+        m_textEditor = new QPlainTextEdit(m_canvas);
+        m_textEditor->setAccessibleName("Edit text");
+        m_textEditor->setTabChangesFocus(true);
+        m_textEditor->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_textEditor->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_textEditor->installEventFilter(this);
+        connect(m_textEditor, &QPlainTextEdit::textChanged, this, [this]() {
+            if (m_textLive && m_textEditor->isVisible())
+                m_textLive(m_textEditor->toPlainText());
+            layoutEditor();
+        });
+    }
+    m_textLive = nullptr;
+    m_textDone = done;
+    QFont f = font;
+    f.setPointSizeF(std::clamp(f.pointSizeF() > 0 ? f.pointSizeF() : 18.0, 14.0, 26.0));
+    m_textEditor->setFont(f);
+    const QColor fg = color.isValid() && color.alpha() > 0 ? color : QColor(Qt::white);
+    const bool dark = fg.lightnessF() < 0.45;
+    m_textEditor->setStyleSheet(QString("QPlainTextEdit { background: %1; color: %2; border: 2px solid #5B8CFF;"
+                                        " border-radius: 8px; padding: 4px 8px; }")
+                                    .arg(dark ? "rgba(245,246,250,250)" : "rgba(10,12,16,248)", fg.name()));
+    m_textEditor->setPlainText(text);
+    m_textEditor->setPlaceholderText("Type your text · Enter to finish · Shift+Enter for a new line · *stars* highlight words");
+    m_textLive = live;
+    if (m_textBar)
+        m_textBar->hide();
+    m_textEditor->show();
+    layoutEditor(); // sized/placed over the text once visible
+    m_textEditor->raise();
+    m_textEditor->setFocus();
+    m_textEditor->selectAll();
+    emit statusMessage("Type your text — Enter to finish, Shift+Enter for a new line, Esc to cancel. *Stars* around words colour them.");
+}
+
+void ViewerWidget::finishTextEdit(bool accepted)
+{
+    if (!m_textEditor || !m_textEditor->isVisible())
+        return;
+    m_textLive = nullptr;
+    m_textEditor->hide();
+    auto done = std::move(m_textDone);
+    m_textDone = nullptr;
+    if (done)
+        done(accepted);
+    m_canvas->setFocus();
+    // bring the formatting bar back for the text that is still selected
+    emit m_doc->selectionChanged();
+}
+
 void ViewerWidget::layoutEditor()
 {
+    if (m_textEditor && m_textEditor->isVisible()) {
+        const QFontMetrics fm(m_textEditor->font());
+        const QStringList lines = m_textEditor->toPlainText().split('\n');
+        int textW = 160;
+        for (const QString &l : lines)
+            textW = std::max(textW, fm.horizontalAdvance(l) + 40);
+        const int w = std::clamp(std::max(textW, m_editAnchor.isValid() ? m_editAnchor.width() + 40 : 0), 240,
+                                 std::max(240, m_canvas->width() - 16));
+        const int h = std::min(m_canvas->height() - 16, fm.lineSpacing() * std::max(1, int(lines.size())) + 22);
+        QPoint c = m_editAnchor.isValid() ? m_editAnchor.center() : QPoint(m_canvas->width() / 2, int(m_canvas->height() * 0.5));
+        const int x = std::clamp(c.x() - w / 2, 8, std::max(8, m_canvas->width() - w - 8));
+        const int y = std::clamp(c.y() - h / 2, 8, std::max(8, m_canvas->height() - h - 8));
+        m_textEditor->setGeometry(x, y, w, h);
+    }
     if (!m_editor)
         return;
     const int h = m_editor->sizeHint().height() + 6;
@@ -735,13 +944,47 @@ void ViewerWidget::resizeEvent(QResizeEvent *e)
 {
     QWidget::resizeEvent(e);
     layoutEditor();
+    layoutTextBar();
     // hide secondary info on narrow viewers
     m_info->setVisible(width() > 720);
 }
 
 bool ViewerWidget::eventFilter(QObject *o, QEvent *e)
 {
+    if (m_textEditor && o == m_textEditor) {
+        // Esc/Enter belong to the editor while typing, not to the app's shortcuts
+        if (e->type() == QEvent::ShortcutOverride) {
+            const int k = static_cast<QKeyEvent *>(e)->key();
+            if (k == Qt::Key_Escape || k == Qt::Key_Return || k == Qt::Key_Enter) {
+                e->accept();
+                return true;
+            }
+        }
+        if (e->type() == QEvent::KeyPress) {
+            auto *ke = static_cast<QKeyEvent *>(e);
+            if (ke->key() == Qt::Key_Escape) {
+                finishTextEdit(false);
+                return true;
+            }
+            if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) && !(ke->modifiers() & Qt::ShiftModifier)) {
+                finishTextEdit(true);
+                return true;
+            }
+        }
+        if (e->type() == QEvent::FocusOut && m_textEditor->isVisible()) {
+            // clicking elsewhere (but not a popup like the font list) keeps what was typed
+            if (!QApplication::activePopupWidget())
+                QTimer::singleShot(0, this, [this]() {
+                    if (m_textEditor->isVisible() && !m_textEditor->hasFocus())
+                        finishTextEdit(true);
+                });
+        }
+    }
     if (o == m_editor) {
+        if (e->type() == QEvent::ShortcutOverride && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
+            e->accept();
+            return true;
+        }
         if (e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
             m_editor->hide();
             m_commit = nullptr;

@@ -63,7 +63,13 @@ SubtitlePanel::SubtitlePanel(Document *doc, QWidget *parent) : QWidget(parent), 
     m_tabs->addTab(style, "Style");
     m_tabs->setUsesScrollButtons(true);
 
-    connect(doc, &Document::projectChanged, this, &SubtitlePanel::refreshAll);
+    connect(doc, &Document::projectChanged, this, [this]() {
+        // Hidden behind another tab: refresh when it is shown instead of on every edit.
+        if (isVisible())
+            refreshAll();
+        else
+            m_refreshPending = true;
+    });
     connect(doc, &Document::projectReset, this, [this]() {
         m_activeTrack.clear();
         refreshAll();
@@ -75,6 +81,8 @@ SubtitlePanel::SubtitlePanel(Document *doc, QWidget *parent) : QWidget(parent), 
             refreshAll();
         }
         const int cue = m_doc->selectedCue();
+        if (perCaptionMode())
+            refreshStyle(); // the style controls show this caption's own look
         if (cue >= 0 && cue < m_table->rowCount() && m_table->currentRow() != cue) {
             m_updating = true;
             m_table->selectRow(cue);
@@ -1038,6 +1046,14 @@ void SubtitlePanel::applyTemplate(const QString &id)
             o.remove("name");
             o.remove("family");
             o.remove("description");
+            // A look, not a placement: keep where this caption sits (its own position if it
+            // was moved, otherwise wherever all captions are), so it keeps following the others.
+            for (const char *k : {"offsetXPct", "offsetYPct", "anchor", "safeArea"})
+                o.remove(k);
+            const QJsonObject old = tr->cues[cue].styleOverrides;
+            for (const char *k : {"offsetXPct", "offsetYPct"})
+                if (old.contains(k))
+                    o[k] = old.value(k);
             tr->cues[cue].styleOverrides = o;
             return true;
         }
@@ -1049,6 +1065,13 @@ void SubtitlePanel::applyTemplate(const QString &id)
     });
 }
 
+bool SubtitlePanel::perCaptionMode() const
+{
+    const Track *t = captionTrack();
+    return t && m_styleForm && m_styleForm->property("applyToCue").toBool() && m_doc->selectedCaptionTrack() == t->id
+           && m_doc->selectedCue() >= 0;
+}
+
 void SubtitlePanel::applyStyleOverride(const QString &key, const QJsonValue &v)
 {
     if (m_updating)
@@ -1057,6 +1080,20 @@ void SubtitlePanel::applyStyleOverride(const QString &key, const QJsonValue &v)
     if (!t)
         return;
     const QString trackId = t->id;
+    static const QStringList trackOnly{"maxWordsPerLine", "maxLines", "maxCharsPerLine"};
+    if (perCaptionMode() && !trackOnly.contains(key)) {
+        // change the look of the selected caption only
+        const int cue = m_doc->selectedCue();
+        m_doc->apply("Caption style (this caption)", [&](Project &p) {
+            Track *tt = p.findTrack(trackId);
+            Transcript *tr = tt ? p.findTranscript(tt->transcriptId) : nullptr;
+            if (!tr || cue < 0 || cue >= tr->cues.size())
+                return false;
+            tr->cues[cue].styleOverrides[key] = v;
+            return true;
+        }, "cuestyle:" + trackId + ":" + QString::number(cue) + ":" + key);
+        return;
+    }
     m_doc->apply("Caption style", [&](Project &p) {
         Track *tt = p.findTrack(trackId);
         tt->styleOverrides[key] = v;
@@ -1072,7 +1109,9 @@ void SubtitlePanel::buildStyleTab(QWidget *tab)
     auto *v = new QVBoxLayout(tab);
     auto *row = new QHBoxLayout;
     row->addWidget(new QLabel("Templates"));
-    auto *applyCue = new QCheckBox("Apply to selected caption only");
+    auto *applyCue = new QCheckBox("Change only the selected caption");
+    applyCue->setToolTip("When on, templates and every style setting below (font, size, colours, position…) change just the "
+                         "caption selected in the list or on the video");
     row->addStretch();
     row->addWidget(applyCue);
     v->addLayout(row);
@@ -1085,7 +1124,10 @@ void SubtitlePanel::buildStyleTab(QWidget *tab)
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     m_styleForm = new QWidget;
-    connect(applyCue, &QCheckBox::toggled, m_styleForm, [this](bool on) { m_styleForm->setProperty("applyToCue", on); });
+    connect(applyCue, &QCheckBox::toggled, m_styleForm, [this](bool on) {
+        m_styleForm->setProperty("applyToCue", on);
+        refreshStyle();
+    });
     auto *f = new QFormLayout(m_styleForm);
     f->setLabelAlignment(Qt::AlignRight);
     f->setRowWrapPolicy(QFormLayout::WrapLongRows);
@@ -1094,7 +1136,14 @@ void SubtitlePanel::buildStyleTab(QWidget *tab)
 
     auto style = [this]() -> CaptionStyle {
         const Track *t = captionTrack();
-        return t ? TemplateLibrary::instance().get(t->styleId).withOverrides(t->styleOverrides) : CaptionStyle();
+        if (!t)
+            return CaptionStyle();
+        CaptionStyle st = TemplateLibrary::instance().get(t->styleId).withOverrides(t->styleOverrides);
+        // "only the selected caption": show that caption's own look
+        if (perCaptionMode())
+            if (const Transcript *tr = m_doc->project().findTranscript(t->transcriptId); tr && m_doc->selectedCue() < tr->cues.size())
+                st = st.withOverrides(tr->cues[m_doc->selectedCue()].styleOverrides);
+        return st;
     };
 
     auto *font = new QFontComboBox;
@@ -1275,8 +1324,18 @@ void SubtitlePanel::refreshStyle()
     m_updating = false;
 }
 
+void SubtitlePanel::showEvent(QShowEvent *e)
+{
+    QWidget::showEvent(e);
+    if (m_refreshPending) {
+        m_refreshPending = false;
+        refreshAll();
+    }
+}
+
 void SubtitlePanel::refreshAll()
 {
+    m_refreshPending = false;
     refreshSources();
     refreshTrackCombo();
     refreshTable();

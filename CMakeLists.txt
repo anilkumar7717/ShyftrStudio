@@ -42,6 +42,7 @@ add_library(shyftr_engine STATIC
     src/captions/CaptionStyle.h src/captions/CaptionStyle.cpp
     src/captions/CaptionEngine.h src/captions/CaptionEngine.cpp
     src/captions/OverlayRenderer.h src/captions/OverlayRenderer.cpp
+    src/captions/TextStyles.h src/captions/TextStyles.cpp
     src/captions/SubtitleIO.h src/captions/SubtitleIO.cpp
     src/captions/Transcription.h src/captions/Transcription.cpp
     src/media/MediaProbe.h src/media/MediaProbe.cpp
@@ -71,6 +72,8 @@ if(SHYFTR_BUILD_APP)
         src/app/TimelineWidget.h src/app/TimelineWidget.cpp
         src/app/MediaBinWidget.h src/app/MediaBinWidget.cpp
         src/app/InspectorWidget.h src/app/InspectorWidget.cpp
+        src/app/TextStyleUi.h src/app/TextStyleUi.cpp
+        src/app/TextToolbar.h src/app/TextToolbar.cpp
         src/app/SubtitlePanel.h src/app/SubtitlePanel.cpp
         src/app/TemplateGallery.h src/app/TemplateGallery.cpp
         src/app/EffectsBrowser.h src/app/EffectsBrowser.cpp

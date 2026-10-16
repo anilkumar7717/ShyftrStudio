@@ -80,6 +80,7 @@ private:
     };
 
     void rebuild();
+    void onPlayheadMoved();
     void updateScrollbars();
     int headerWidth() const { return m_compact ? 116 : 150; }
     int rulerHeight() const { return 28; }
@@ -88,7 +89,7 @@ private:
     int rowAtY(int y) const;
     // +1: the "new track" lane above the top track, -1: the lane below the last track, 0: a track
     int laneAtY(int y) const;
-    int topLaneHeight() const { return 22; }
+    int topLaneHeight() const { return 14; }
     int bottomLaneHeight() const { return 36; }
     QRect laneRect(int lane) const;
     void paintDropFeedback(QPainter &p);
@@ -119,7 +120,7 @@ private:
     QHash<QString, QVector<CueInstance>> m_cues; // caption track id -> mapped cues
     double m_pxPerSec = 80;
     bool m_compact = false;
-    int m_density = 0; // 0 normal, 1 compact, 2 dense (chosen to fit the available height)
+    int m_density = 0; // 0 normal, 1 compact, 2 dense, 3 tiny (chosen to fit the available height)
     bool m_snap = true;
 
     // drag state
@@ -155,6 +156,9 @@ private:
     int m_reorderTrack = -1;     // track index being dragged by its header
     int m_reorderTo = -1;        // destination track index
     TimeUs m_cueOrigStart = 0, m_cueOrigEnd = 0;
+    bool m_anyKeyframes = false;
+    QHash<QString, QImage> m_thumbCache;
+    int m_lastPlayheadX = -100000;
 };
 
 } // namespace ss

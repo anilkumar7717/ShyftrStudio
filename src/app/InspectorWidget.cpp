@@ -4,6 +4,8 @@
 #include "../media/ImageFx.h"
 #include "Theme.h"
 #include "Widgets.h"
+#include "TextStyleUi.h"
+#include "../captions/TextStyles.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -188,6 +190,28 @@ void InspectorWidget::refreshValues()
     m_updating = false;
 }
 
+// Let every control shrink to the panel width instead of pushing the content off the right
+// edge (spin boxes and long button labels otherwise demand their full natural width).
+void InspectorWidget::fitNarrow(QWidget *root)
+{
+    for (QAbstractSpinBox *sb : root->findChildren<QAbstractSpinBox *>()) {
+        sb->setMinimumWidth(52);
+        sb->setSizePolicy(QSizePolicy::Expanding, sb->sizePolicy().verticalPolicy());
+    }
+    for (QComboBox *cb : root->findChildren<QComboBox *>()) {
+        cb->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        cb->setMinimumContentsLength(4);
+        cb->setMinimumWidth(60);
+    }
+    for (QPushButton *b : root->findChildren<QPushButton *>()) {
+        if (b->toolTip().isEmpty() && b->text().size() >= 14)
+            b->setToolTip(b->text());
+        b->setMinimumWidth(std::min(b->minimumSizeHint().width(), 40));
+    }
+    for (QLineEdit *le : root->findChildren<QLineEdit *>())
+        le->setMinimumWidth(40);
+}
+
 void InspectorWidget::resizeEvent(QResizeEvent *e)
 {
     QScrollArea::resizeEvent(e);
@@ -213,6 +237,7 @@ void InspectorWidget::rebuild()
     m_signature.clear();
     m_keyframed = false;
     if (!m_doc->isOpen()) {
+        fitNarrow(m_body);
         setWidget(m_body);
         return;
     }
@@ -252,6 +277,7 @@ void InspectorWidget::rebuild()
         title->setText("Project");
         buildProject();
         root->addStretch(1);
+        fitNarrow(m_body);
         setWidget(m_body);
         refreshValues();
         return;
@@ -280,6 +306,7 @@ void InspectorWidget::rebuild()
     if (!homogeneous) {
         root->addWidget(hint("Select clips of one kind to edit their properties together."));
         root->addStretch(1);
+        fitNarrow(m_body);
         setWidget(m_body);
         refreshValues();
         return;
@@ -355,7 +382,8 @@ void InspectorWidget::rebuild()
     }
     m_tabs->setMinimumWidth(0);
     m_body->setMinimumWidth(0);
-    setWidget(m_body);
+    fitNarrow(m_body);
+        setWidget(m_body);
     refreshValues();
 }
 
@@ -1401,6 +1429,53 @@ void InspectorWidget::buildFades(bool audio)
 
 void InspectorWidget::buildTitleText()
 {
+    // Several texts selected: say so, and offer to edit just one (edits apply to every selected text).
+    int titles = 0;
+    for (const QString &id : m_doc->selectedClips())
+        if (const Clip *c = m_doc->project().findClip(id); c && c->type == ClipType::Title)
+            ++titles;
+    if (titles > 1) {
+        auto *banner = new QWidget;
+        auto *bl = new QHBoxLayout(banner);
+        bl->setContentsMargins(8, 6, 8, 6);
+        auto *lab = new QLabel(QString("Editing %1 texts together").arg(titles));
+        lab->setWordWrap(true);
+        auto *only = new QPushButton("Edit only this one");
+        bl->addWidget(lab, 1);
+        bl->addWidget(only);
+        banner->setStyleSheet("background: rgba(91,140,255,0.18); border-radius: 6px;");
+        m_layout->addWidget(banner);
+        connect(only, &QPushButton::clicked, this, [this]() {
+            if (const Clip *c = firstClip())
+                m_doc->setSelectedClips({c->id});
+        });
+    }
+
+    // Professional looks: one click restyles the text (keeps its words, position and size).
+    QFormLayout *sf;
+    section("Text styles", &sf);
+    auto *styles = TextStyleUi::makeGrid(nullptr, QSize(84, 47));
+    styles->setFixedHeight(2 * (47 + 26) + 10);
+    styles->setToolTip("Click a style to apply it to this text only");
+    sf->addRow(styles);
+    connect(styles, &QListWidget::itemClicked, this, [this](QListWidgetItem *it) {
+        const QString id = it->data(Qt::UserRole).toString();
+        edit("Text style: " + it->text(), "textstyle", [id](Clip &c, Track &) {
+            if (c.type == ClipType::Title)
+                TextStyles::apply(c.title, id);
+        });
+    });
+    m_refreshers << [this, styles]() {
+        const Clip *c = firstClip();
+        if (!c)
+            return;
+        const QSignalBlocker b(styles);
+        styles->clearSelection();
+        for (int i = 0; i < styles->count(); ++i)
+            if (styles->item(i)->data(Qt::UserRole).toString() == c->title.styleId)
+                styles->item(i)->setSelected(true);
+    };
+
     QFormLayout *f;
     section("Text", &f);
     auto *text = new QPlainTextEdit;
@@ -1412,10 +1487,17 @@ void InspectorWidget::buildTitleText()
     for (int w : {300, 400, 500, 600, 700, 800, 900})
         weight->addItem(QString::number(w), w);
     auto *italic = new QCheckBox("Italic");
+    auto *underline = new QCheckBox("Underline");
     auto *wr = new QHBoxLayout;
     wr->addWidget(weight);
     wr->addWidget(italic);
     f->addRow("Weight", wr);
+    auto *textCase = new QComboBox;
+    textCase->addItem("As typed", QString());
+    textCase->addItem("UPPERCASE", "upper");
+    textCase->addItem("lowercase", "lower");
+    textCase->addItem("Title Case", "title");
+    f->addRow("Format", flowRow({underline, textCase}));
     auto *size = new SliderSpin(0.01, 0.3, 0.002, 3);
     f->addRow("Size", size);
     auto *color = new ColorButton;
@@ -1431,6 +1513,15 @@ void InspectorWidget::buildTitleText()
     align->addItem("Center", "center");
     align->addItem("Right", "right");
     f->addRow("Align", align);
+    auto *spacing = new SliderSpin(0.7, 2.5, 0.05, 2, "×");
+    f->addRow("Line spacing", spacing);
+    auto *highlight = new ColorButton;
+    highlight->setToolTip("Words written between *stars* use this colour");
+    auto *hint = new QLabel("Put *stars* around words to colour them");
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color: palette(mid);");
+    f->addRow("Highlight", highlight);
+    f->addRow("", hint);
     auto *lower = new QPushButton("Lower third");
     auto *center = new QPushButton("Centre");
     auto *topl = new QPushButton("Top label");
@@ -1443,9 +1534,13 @@ void InspectorWidget::buildTitleText()
         const TitleProps &t = c->title;
         if (text->toPlainText() != t.text)
             text->setPlainText(t.text);
-        font->setCurrentFont(QFont(t.fontFamily));
+        font->setCurrentFont(QFont(TextStyleUi::installedFamily(t.fontFamily)));
         weight->setCurrentIndex(std::max(0, weight->findData(t.weight)));
         italic->setChecked(t.italic);
+        underline->setChecked(t.underline);
+        textCase->setCurrentIndex(std::max(0, textCase->findData(t.textCase)));
+        spacing->setValue(t.lineSpacing);
+        highlight->setColor(t.highlightColor);
         size->setValue(t.sizePct);
         color->setColor(t.color);
         outline->setColor(t.outlineColor);
@@ -1463,6 +1558,13 @@ void InspectorWidget::buildTitleText()
     connect(font, &QFontComboBox::currentFontChanged, this, [E](const QFont &fnt) { const QString fam = fnt.family(); E("font", [fam](TitleProps &t) { t.fontFamily = fam; }); });
     connect(weight, &QComboBox::currentIndexChanged, this, [weight, E](int) { const int w = weight->currentData().toInt(); E("weight", [w](TitleProps &t) { t.weight = w; }); });
     connect(italic, &QCheckBox::toggled, this, [E](bool on) { E("italic", [on](TitleProps &t) { t.italic = on; }); });
+    connect(underline, &QCheckBox::toggled, this, [E](bool on) { E("underline", [on](TitleProps &t) { t.underline = on; }); });
+    connect(textCase, &QComboBox::currentIndexChanged, this, [textCase, E](int) {
+        const QString v = textCase->currentData().toString();
+        E("case", [v](TitleProps &t) { t.textCase = v; });
+    });
+    connect(spacing, &SliderSpin::valueChanged, this, [E](double v) { E("spacing", [v](TitleProps &t) { t.lineSpacing = v; }); });
+    connect(highlight, &ColorButton::colorChanged, this, [E](const QColor &c) { E("highlight", [c](TitleProps &t) { t.highlightColor = c; }); });
     connect(size, &SliderSpin::valueChanged, this, [E](double v) { E("size", [v](TitleProps &t) { t.sizePct = v; }); });
     connect(color, &ColorButton::colorChanged, this, [E](const QColor &c) { E("color", [c](TitleProps &t) { t.color = c; }); });
     connect(outline, &ColorButton::colorChanged, this, [E](const QColor &c) { E("outline", [c](TitleProps &t) { t.outlineColor = c; }); });
@@ -1521,6 +1623,13 @@ void InspectorWidget::buildTitleStyle()
     f->addRow("Shadow", sr);
     auto *so = new SliderSpin(0, 0.3, 0.005, 3);
     f->addRow("Shadow distance", so);
+    auto *glow = new ColorButton;
+    auto *glowOn = new QCheckBox("Glow");
+    auto *glr = new QHBoxLayout;
+    glr->addWidget(glowOn);
+    glr->addWidget(glow);
+    glr->addStretch();
+    f->addRow("Glow", glr);
     auto *ls = new SliderSpin(-10, 60, 0.5, 1, "%");
     f->addRow("Letter spacing", ls);
     auto *bp = new SliderSpin(0, 1.5, 0.01, 2);
@@ -1539,6 +1648,9 @@ void InspectorWidget::buildTitleStyle()
         shadow->setColor(t.shadowColor.alpha() > 0 ? t.shadowColor : QColor(0, 0, 0, 160));
         shadow->setEnabled(t.shadowColor.alpha() > 0);
         so->setValue(t.shadowOffsetPct);
+        glowOn->setChecked(t.glowColor.alpha() > 0);
+        glow->setColor(t.glowColor.alpha() > 0 ? t.glowColor : QColor("#22D3EE"));
+        glow->setEnabled(t.glowColor.alpha() > 0);
         ls->setValue(t.letterSpacingPct);
         bp->setValue(t.boxPaddingPct);
         br->setValue(t.boxRadiusPct);
@@ -1557,6 +1669,11 @@ void InspectorWidget::buildTitleStyle()
     });
     connect(shadow, &ColorButton::colorChanged, this, [E](const QColor &c) { E("shadowc", [c](TitleProps &t) { t.shadowColor = c; }); });
     connect(so, &SliderSpin::valueChanged, this, [E](double v) { E("shadowo", [v](TitleProps &t) { t.shadowOffsetPct = v; }); });
+    connect(glowOn, &QCheckBox::toggled, this, [E, glow](bool on) {
+        const QColor c = glow->color();
+        E("glow", [on, c](TitleProps &t) { t.glowColor = on ? (c.alpha() > 0 ? c : QColor("#22D3EE")) : QColor(0, 0, 0, 0); });
+    });
+    connect(glow, &ColorButton::colorChanged, this, [E](const QColor &c) { E("glowc", [c](TitleProps &t) { t.glowColor = c; }); });
     connect(ls, &SliderSpin::valueChanged, this, [E](double v) { E("ls", [v](TitleProps &t) { t.letterSpacingPct = v; }); });
     connect(bp, &SliderSpin::valueChanged, this, [E](double v) { E("bp", [v](TitleProps &t) { t.boxPaddingPct = v; }); });
     connect(br, &SliderSpin::valueChanged, this, [E](double v) { E("br", [v](TitleProps &t) { t.boxRadiusPct = v; }); });

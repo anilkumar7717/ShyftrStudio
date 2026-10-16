@@ -195,11 +195,39 @@ static QStringList displayWords(const CaptionStyle &s, const CueInstance &cue)
 
 QRectF CaptionRenderer::cueRect(const QSize &frame, const CaptionStyle &s, const CueInstance &cue)
 {
-    const QStringList words = displayWords(s, cue);
+    return cueRect(frame, s, cue, -1);
+}
+
+QRectF CaptionRenderer::cueRect(const QSize &frame, const CaptionStyle &s, const CueInstance &cue, TimeUs t)
+{
+    // Same layout decisions as paintCue, so the box you grab is the text you see.
+    const QStringList all = displayWords(s, cue);
+    if (all.isEmpty())
+        return {};
+    QStringList words;
     QVector<int> idx;
-    for (int i = 0; i < words.size(); ++i)
-        idx << i;
-    return layoutBlock(frame, s, words, idx, cue.speaker).block;
+    if (s.wordEffect == "activeOnly") {
+        const int a = std::clamp(t >= 0 ? activeWordIndex(cue, t) : 0, 0, int(all.size()) - 1);
+        words << all[a];
+        idx << a;
+    } else {
+        words = all;
+        for (int i = 0; i < words.size(); ++i)
+            idx << i;
+    }
+    const BlockLayout L = layoutBlock(frame, s, words, idx, cue.speaker);
+    QRectF r = L.block;
+    const double pad = s.boxPaddingPct * L.fontPx;
+    if (s.boxMode == "cue" || s.boxMode == "line")
+        r = r.adjusted(-pad, -pad * 0.6, pad, pad * 0.6);
+    else if (s.boxMode == "bar")
+        r = QRectF(0, L.block.top() - pad * 0.6, frame.width(), L.block.height() + pad * 1.2);
+    // words that pop/grow while spoken briefly draw larger than their layout box
+    if ((s.wordEffect == "activeOnly" || s.wordEffect == "pop") && s.popScale > 1.0) {
+        const double k = s.popScale - 1.0;
+        r = r.adjusted(-r.width() * k / 2, -r.height() * k / 2, r.width() * k / 2, r.height() * k / 2);
+    }
+    return r;
 }
 
 void CaptionRenderer::paintCue(QPainter &p, const QSize &frame, const CaptionStyle &sIn, const CueInstance &cue, TimeUs t,
@@ -415,8 +443,14 @@ QFont GraphicsRenderer::titleFont(const TitleProps &tp, int frameHeight)
 {
     QFont f;
     // emoji fonts last: they only supply glyphs the text fonts lack
-    f.setFamilies({tp.fontFamily, "Helvetica Neue", "Arial", "Segoe UI", "Noto Sans", "DejaVu Sans", "Apple Color Emoji",
-                   "Segoe UI Emoji", "Noto Color Emoji"});
+    // fontFamily may list alternatives ("Futura, Century Gothic") so a style looks right on Mac and Windows
+    QStringList families;
+    for (const QString &fam : tp.fontFamily.split(',', Qt::SkipEmptyParts))
+        if (!fam.trimmed().isEmpty())
+            families << fam.trimmed();
+    families << QStringList{"Helvetica Neue", "Arial", "Segoe UI", "Noto Sans", "DejaVu Sans", "Apple Color Emoji",
+                            "Segoe UI Emoji", "Noto Color Emoji"};
+    f.setFamilies(families);
     f.setPixelSize(std::max(6, int(std::lround(tp.sizePct * frameHeight))));
     f.setWeight(QFont::Weight(std::clamp(tp.weight, 100, 900)));
     f.setItalic(tp.italic);
@@ -512,19 +546,41 @@ QVector<LaidRun> layoutRuns(const QFont &f, const QString &line, double *totalWi
 }
 } // namespace
 
+// The text as drawn (letter case applied, *markers* removed) and, per drawn character,
+// whether it is emphasised (written between *stars*).
+static QString titleDisplay(const TitleProps &tp, QVector<bool> *emph)
+{
+    QString plain;
+    QVector<bool> mask;
+    bool on = false;
+    for (const QChar ch : tp.text) {
+        if (ch == '*') {
+            on = !on;
+            continue;
+        }
+        plain += ch;
+        mask << on;
+    }
+    const QString shown = tp.displayText();
+    if (emph)
+        *emph = shown.size() == plain.size() ? mask : QVector<bool>(shown.size(), false);
+    return shown;
+}
+
 QRectF GraphicsRenderer::titleRect(const QSize &frame, const Clip &c)
 {
     const TitleProps &tp = c.title;
     const QFont f = titleFont(tp, frame.height());
     QFontMetricsF fm(f);
-    const QStringList lines = (tp.text.isEmpty() ? QString(" ") : tp.text).split('\n');
+    const QString shown = titleDisplay(tp, nullptr);
+    const QStringList lines = (shown.isEmpty() ? QString(" ") : shown).split('\n');
     double maxW = 0;
     for (const QString &l : lines) {
         double w = 0;
         layoutRuns(f, l, &w);
         maxW = std::max(maxW, w);
     }
-    const double lh = fm.height() * 1.1;
+    const double lh = fm.height() * std::clamp(tp.lineSpacing, 0.6, 3.0);
     const double blockH = lh * lines.size();
     const QPointF ctr(tp.x * frame.width(), tp.y * frame.height());
     QRectF block(ctr.x() - maxW / 2, ctr.y() - blockH / 2, maxW, blockH);
@@ -597,7 +653,9 @@ void GraphicsRenderer::paintTitle(QPainter &p, const QSize &frame, const Clip &c
     const double aOut = clamp01((c.end() - t) / ad);
     const double eIn = easeOutCubic(aIn), eOut = easeOutCubic(aOut);
     double dx = 0, dy = 0, scale = 1, rot = 0, blurR = 0;
-    QString text = tp.text;
+    QVector<bool> emphMask;
+    const QString shownText = titleDisplay(tp, &emphMask);
+    QString text = shownText;
     const QString &in = tp.animation;
     QString outA = tp.animationOut;
     if (outA == "auto")
@@ -708,14 +766,14 @@ void GraphicsRenderer::paintTitle(QPainter &p, const QSize &frame, const Clip &c
     const QFont f = titleFont(tp, frame.height());
     QFontMetricsF fm(f);
     const QStringList lines = text.split('\n');
-    const QStringList fullLines = tp.text.split('\n'); // stable layout during typewriter
+    const QStringList fullLines = shownText.split('\n'); // stable layout during typewriter
     double maxW = 0;
     for (const QString &l : fullLines) {
         double w = 0;
         layoutRuns(f, l, &w);
         maxW = std::max(maxW, w);
     }
-    const double lh = fm.height() * 1.1;
+    const double lh = fm.height() * std::clamp(tp.lineSpacing, 0.6, 3.0);
     const double blockH = lh * fullLines.size();
     const double cx = tp.x * W;
     const double cy = tp.y * H;
@@ -736,7 +794,7 @@ void GraphicsRenderer::paintTitle(QPainter &p, const QSize &frame, const Clip &c
         p.setBrush(tp.backgroundColor);
         p.drawRoundedRect(block.adjusted(-pad, -pad * 0.5, pad, pad * 0.5), rad, rad);
     }
-    QPainterPath all;
+    QPainterPath all, emphPath;
     struct EmojiDraw {
         QPointF at;
         QString text;
@@ -752,30 +810,57 @@ void GraphicsRenderer::paintTitle(QPainter &p, const QSize &frame, const Clip &c
         else if (tp.align == "right")
             x = block.right() - lw;
         const double baseline = block.top() + i * lh + (lh - fm.height()) / 2 + fm.ascent();
-        double unused = 0;
-        for (const LaidRun &r : layoutRuns(f, lines[i], &unused)) {
-            if (r.emoji)
-                emojis << EmojiDraw{QPointF(x + r.x, baseline), r.text, r.width};
-            else
-                all.addText(x + r.x, baseline, f, r.text);
+        // offset of this line in the whole text, to look up which characters are emphasised
+        int lineStart = 0;
+        for (int j = 0; j < i; ++j)
+            lineStart += fullLines.value(j).size() + 1;
+        // split the line into plain / *emphasised* segments, each laid out after the previous
+        const QString &ln = lines[i];
+        int segStart = 0;
+        while (segStart < ln.size()) {
+            const bool on = emphMask.value(lineStart + segStart, false);
+            int segEnd = segStart;
+            while (segEnd < ln.size() && emphMask.value(lineStart + segEnd, false) == on)
+                ++segEnd;
+            double before = 0;
+            if (segStart > 0)
+                layoutRuns(f, ln.left(segStart), &before);
+            double unused = 0;
+            for (const LaidRun &r : layoutRuns(f, ln.mid(segStart, segEnd - segStart), &unused)) {
+                if (r.emoji)
+                    emojis << EmojiDraw{QPointF(x + before + r.x, baseline), r.text, r.width};
+                else
+                    (on ? emphPath : all).addText(x + before + r.x, baseline, f, r.text);
+            }
+            segStart = segEnd;
+        }
+        if (tp.underline && !ln.trimmed().isEmpty()) {
+            double drawnW = 0;
+            layoutRuns(f, ln, &drawnW);
+            const double th = std::max(1.0, f.pixelSize() * 0.06);
+            all.addRect(QRectF(x, baseline + std::max(th, fm.underlinePos()), drawnW, th));
         }
     }
+    QPainterPath shapeAll = all;
+    shapeAll.addPath(emphPath);
+    if (tp.glowColor.alpha() > 0)
+        glow = std::max(glow, 1.0);
     if (glow > 0) {
-        QColor gc = tp.gradientColor.alpha() > 0 ? tp.gradientColor : tp.color;
+        QColor gc = tp.glowColor.alpha() > 0 ? tp.glowColor : tp.gradientColor.alpha() > 0 ? tp.gradientColor : tp.color;
         for (int i = 3; i >= 1; --i) {
             gc.setAlphaF(0.18 * glow);
-            p.strokePath(all, QPen(gc, f.pixelSize() * 0.12 * i, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.strokePath(shapeAll, QPen(gc, f.pixelSize() * 0.12 * i, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         }
     }
     if (tp.shadowColor.alpha() > 0) {
         const double off = tp.shadowOffsetPct * f.pixelSize();
-        const QPainterPath sh = all.translated(off, off);
+        const QPainterPath sh = shapeAll.translated(off, off);
         if (tp.outlineColor.alpha() > 0 && tp.outlineWidthPct > 0)
             p.strokePath(sh, QPen(tp.shadowColor, tp.outlineWidthPct * f.pixelSize() * 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.fillPath(sh, tp.shadowColor);
     }
     if (tp.outlineColor.alpha() > 0 && tp.outlineWidthPct > 0)
-        p.strokePath(all, QPen(tp.outlineColor, tp.outlineWidthPct * f.pixelSize() * 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.strokePath(shapeAll, QPen(tp.outlineColor, tp.outlineWidthPct * f.pixelSize() * 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     if (tp.gradientColor.alpha() > 0) {
         QLinearGradient g(block.topLeft(), block.bottomLeft());
         g.setColorAt(0.1, tp.color);
@@ -784,6 +869,8 @@ void GraphicsRenderer::paintTitle(QPainter &p, const QSize &frame, const Clip &c
     } else {
         p.fillPath(all, tp.color);
     }
+    if (!emphPath.isEmpty())
+        p.fillPath(emphPath, tp.highlightColor);
     if (!emojis.isEmpty()) {
         // Colour glyphs are drawn untransformed into an image, which is then placed with the
         // painter's transform (so rotation/scale animations work and nothing falls back to outlines).

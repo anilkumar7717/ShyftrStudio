@@ -28,6 +28,10 @@ public:
 
     // Structural validation. Returns a list of human readable problems (empty = valid).
     static QStringList validate(const Project &p);
+    // True when a and b would save identically (ignoring playhead and the modified time).
+    // Fast for the usual edit: parts the edit did not touch are still shared (Qt implicit
+    // sharing) and are not compared at all.
+    static bool sameContent(const Project &a, const Project &b);
 
     // Partial (de)serialisers reused by templates/clipboard/tests.
     static QJsonObject clipToJson(const Clip &c);

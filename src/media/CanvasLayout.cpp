@@ -65,7 +65,7 @@ QVector<Item> itemsAt(const Project &p, const OverlayScene &scene, TimeUs t)
         it.kind = Item::Caption;
         it.trackId = L.trackId;
         it.cueIndex = ci->cueIndex;
-        it.rect = CaptionRenderer::cueRect(frame, L.style.withOverrides(ci->overrides), *ci);
+        it.rect = CaptionRenderer::cueRect(frame, L.style.withOverrides(ci->overrides), *ci, t);
         const Track *tr = p.findTrack(L.trackId);
         it.locked = tr && tr->locked;
         it.cueHasOwnPosition = ci->overrides.contains("offsetXPct") || ci->overrides.contains("offsetYPct");
@@ -118,12 +118,23 @@ Grab grab(const Project &p, const Item &item, bool perCue)
         const Track *t = p.findTrack(item.trackId);
         if (!t)
             return g;
-        CaptionStyle s = trackStyle(p, *t);
-        g.perCue = perCue || item.cueHasOwnPosition;
+        const CaptionStyle base = trackStyle(p, *t);
+        CaptionStyle s = base;
+        g.perCue = perCue;
+        const Transcript *tr = p.findTranscript(t->transcriptId);
         if (g.perCue) {
-            const Transcript *tr = p.findTranscript(t->transcriptId);
             if (tr && item.cueIndex >= 0 && item.cueIndex < tr->cues.size())
                 s = s.withOverrides(tr->cues[item.cueIndex].styleOverrides);
+        } else if (tr) {
+            for (int i = 0; i < tr->cues.size(); ++i) {
+                const QJsonObject &o = tr->cues[i].styleOverrides;
+                if (o.contains("offsetXPct") || o.contains("offsetYPct")) {
+                    const CaptionStyle cs = base.withOverrides(o);
+                    g.cueOffsets.insert(i, QPointF(cs.offsetXPct, cs.offsetYPct));
+                }
+                if (o.contains("sizePct"))
+                    g.cueSizes.insert(i, o.value("sizePct").toDouble());
+            }
         }
         g.x = s.offsetXPct;
         g.y = s.offsetYPct;
@@ -208,6 +219,12 @@ bool move(Project &p, const Grab &g, const QPointF &delta)
             return false;
         setCaptionValue(p, g, "offsetXPct", std::clamp(g.x + fx, -0.5, 0.5));
         setCaptionValue(p, g, "offsetYPct", std::clamp(g.y - fy, -0.9, 0.9)); // + = up
+        if (!g.perCue)
+            for (auto it = g.cueOffsets.cbegin(); it != g.cueOffsets.cend(); ++it)
+                if (Cue *cue = cueFor(p, g.item.trackId, it.key())) {
+                    cue->styleOverrides["offsetXPct"] = std::clamp(it.value().x() + fx, -0.5, 0.5);
+                    cue->styleOverrides["offsetYPct"] = std::clamp(it.value().y() - fy, -0.9, 0.9);
+                }
         return true;
     case Item::Title:
     case Item::Shape:
@@ -235,6 +252,10 @@ bool scale(Project &p, const Grab &g, double factor)
         if (!p.findTrack(g.item.trackId))
             return false;
         setCaptionValue(p, g, "sizePct", std::clamp(g.size * factor, 0.015, 0.3));
+        if (!g.perCue)
+            for (auto it = g.cueSizes.cbegin(); it != g.cueSizes.cend(); ++it)
+                if (Cue *cue = cueFor(p, g.item.trackId, it.key()))
+                    cue->styleOverrides["sizePct"] = std::clamp(it.value() * factor, 0.015, 0.3);
         return true;
     case Item::Title: {
         Clip *c = p.findClip(g.item.clipId);
@@ -286,21 +307,24 @@ bool setShapeRect(Project &p, const Grab &g, const QRectF &rIn)
     return true;
 }
 
-bool resetPosition(Project &p, const Item &item)
+bool resetPosition(Project &p, const Item &item, bool perCue)
 {
     switch (item.kind) {
     case Item::Caption: {
         bool changed = false;
-        if (item.cueHasOwnPosition) {
-            if (Cue *cue = cueFor(p, item.trackId, item.cueIndex)) {
-                changed = cue->styleOverrides.contains("offsetXPct") || cue->styleOverrides.contains("offsetYPct");
-                cue->styleOverrides.remove("offsetXPct");
-                cue->styleOverrides.remove("offsetYPct");
-            }
+        auto clear = [&](QJsonObject &o) {
+            changed = changed || o.contains("offsetXPct") || o.contains("offsetYPct");
+            o.remove("offsetXPct");
+            o.remove("offsetYPct");
+        };
+        if (perCue) {
+            if (Cue *cue = cueFor(p, item.trackId, item.cueIndex))
+                clear(cue->styleOverrides); // back to where all the other captions are
         } else if (Track *t = p.findTrack(item.trackId)) {
-            changed = t->styleOverrides.contains("offsetXPct") || t->styleOverrides.contains("offsetYPct");
-            t->styleOverrides.remove("offsetXPct");
-            t->styleOverrides.remove("offsetYPct");
+            clear(t->styleOverrides);
+            if (Transcript *tr = p.findTranscript(t->transcriptId))
+                for (Cue &c : tr->cues)
+                    clear(c.styleOverrides);
         }
         return changed;
     }
@@ -323,18 +347,23 @@ bool resetPosition(Project &p, const Item &item)
     return false;
 }
 
-bool resetSize(Project &p, const Item &item)
+bool resetSize(Project &p, const Item &item, bool perCue)
 {
     switch (item.kind) {
     case Item::Caption: {
         bool changed = false;
-        if (Cue *cue = cueFor(p, item.trackId, item.cueIndex); cue && cue->styleOverrides.contains("sizePct")) {
-            cue->styleOverrides.remove("sizePct");
-            changed = true;
-        }
-        if (Track *t = p.findTrack(item.trackId); t && t->styleOverrides.contains("sizePct")) {
-            t->styleOverrides.remove("sizePct");
-            changed = true;
+        auto clear = [&](QJsonObject &o) {
+            changed = changed || o.contains("sizePct");
+            o.remove("sizePct");
+        };
+        if (perCue) {
+            if (Cue *cue = cueFor(p, item.trackId, item.cueIndex))
+                clear(cue->styleOverrides);
+        } else if (Track *t = p.findTrack(item.trackId)) {
+            clear(t->styleOverrides);
+            if (Transcript *tr = p.findTranscript(t->transcriptId))
+                for (Cue &c : tr->cues)
+                    clear(c.styleOverrides);
         }
         return changed;
     }
@@ -359,6 +388,26 @@ bool resetSize(Project &p, const Item &item)
         return false;
     }
     return false;
+}
+
+bool applyCaptionPositionToAll(Project &p, const Item &item)
+{
+    if (item.kind != Item::Caption)
+        return false;
+    Track *t = p.findTrack(item.trackId);
+    if (!t)
+        return false;
+    Transcript *tr = p.findTranscript(t->transcriptId);
+    if (!tr || item.cueIndex < 0 || item.cueIndex >= tr->cues.size())
+        return false;
+    const CaptionStyle s = trackStyle(p, *t).withOverrides(tr->cues[item.cueIndex].styleOverrides);
+    t->styleOverrides["offsetXPct"] = s.offsetXPct;
+    t->styleOverrides["offsetYPct"] = s.offsetYPct;
+    for (Cue &c : tr->cues) {
+        c.styleOverrides.remove("offsetXPct");
+        c.styleOverrides.remove("offsetYPct");
+    }
+    return true;
 }
 
 } // namespace CanvasLayout

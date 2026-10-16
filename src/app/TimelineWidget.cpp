@@ -48,11 +48,27 @@ TimelineWidget::TimelineWidget(Document *doc, MediaCache *cache, QWidget *parent
     connect(doc, &Document::projectReset, this, &TimelineWidget::rebuild);
     connect(doc, &Document::selectionChanged, viewport(), qOverload<>(&QWidget::update));
     connect(doc, &Document::cueSelectionChanged, viewport(), qOverload<>(&QWidget::update));
-    connect(doc, &Document::playheadChanged, viewport(), qOverload<>(&QWidget::update));
+    connect(doc, &Document::playheadChanged, this, &TimelineWidget::onPlayheadMoved);
     connect(cache, &MediaCache::updated, viewport(), qOverload<>(&QWidget::update));
     connect(horizontalScrollBar(), &QScrollBar::valueChanged, viewport(), qOverload<>(&QWidget::update));
     connect(verticalScrollBar(), &QScrollBar::valueChanged, viewport(), qOverload<>(&QWidget::update));
     rebuild();
+}
+
+void TimelineWidget::onPlayheadMoved()
+{
+    // During playback only the old and new playhead strips (and the timecode) change, so
+    // repaint just those instead of the whole timeline 30-60 times a second.
+    QWidget *vp = viewport();
+    const int x = int(std::lround(xForTime(m_doc->playhead())));
+    if (m_anyKeyframes || m_lastPlayheadX < -1000) {
+        vp->update();
+    } else {
+        const int h = vp->height();
+        vp->update(QRect(m_lastPlayheadX - 8, 0, 17, h));
+        vp->update(QRect(x - 8, 0, 17, h));
+        vp->update(QRect(0, 0, headerWidth(), rulerHeight()));
+    }
 }
 
 void TimelineWidget::setCompact(bool c)
@@ -70,6 +86,10 @@ void TimelineWidget::rebuild()
         return;
     }
     const Project &p = m_doc->project();
+    m_anyKeyframes = false;
+    for (const auto &t : p.tracks)
+        for (const auto &c : t.clips)
+            m_anyKeyframes = m_anyKeyframes || !c.fx.keyframes.isEmpty(); // keyframe diamonds light up at the playhead
     int y = topLaneHeight();
     auto add = [&](int idx, int h) {
         m_rows << Row{idx, y, h};
@@ -79,10 +99,11 @@ void TimelineWidget::rebuild()
     int nv = 0, na = 0, nc = 0;
     for (const auto &t : p.tracks)
         (t.kind == TrackKind::Video ? nv : t.kind == TrackKind::Audio ? na : nc)++;
-    const int avail = viewport()->height() - rulerHeight() - 4 - topLaneHeight() - bottomLaneHeight() / 2;
-    static const int heights[3][3] = {{64, 54, 38}, {46, 38, 30}, {34, 30, 24}};
+    const int avail = viewport()->height() - rulerHeight() - 4 - topLaneHeight() - 14;
+    // normal, compact, dense, tiny (small laptop screens / many tracks)
+    static const int heights[4][3] = {{64, 54, 38}, {46, 38, 30}, {34, 30, 24}, {26, 24, 20}};
     m_density = m_compact ? 1 : 0;
-    while (m_density < 2) {
+    while (m_density < 3) {
         const int need = nv * (heights[m_density][0] + 2) + na * (heights[m_density][1] + 2) + nc * (heights[m_density][2] + 2);
         if (need <= avail)
             break;
@@ -286,8 +307,9 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         paintRow(p, row);
     paintRuler(p);
 
-    // playhead
+    // playhead (remember where it was drawn, so the next move only repaints two thin strips)
     const double px = xForTime(m_doc->playhead());
+    m_lastPlayheadX = int(std::lround(px));
     if (px >= headerWidth()) {
         p.setPen(QPen(QColor("#FF4D5E"), 1.5));
         p.drawLine(QPointF(px, 0), QPointF(px, viewport()->height()));
@@ -323,9 +345,9 @@ void TimelineWidget::paintLaneHint(QPainter &p, int lane, bool active, const QSt
     pen.setAlpha(active ? 255 : 110);
     p.setPen(QPen(pen, 1, Qt::DashLine));
     p.drawRoundedRect(r, 5, 5);
-    if (r.height() >= 14) {
+    if (r.height() >= 8) {
         QFont f = font();
-        f.setPointSizeF(f.pointSizeF() * 0.85);
+        f.setPointSizeF(f.pointSizeF() * (r.height() >= 14 ? 0.85 : 0.7));
         p.setFont(f);
         p.setPen(active ? Qt::white : Theme::textDim());
         p.drawText(r.adjusted(10, 0, -10, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
@@ -707,7 +729,16 @@ void TimelineWidget::paintClip(QPainter &p, const Row &row, const Clip &c, const
             p.setOpacity(ghost ? 0.55 : 1.0);
         } else if (!strip.isNull()) {
             p.setOpacity(0.7);
-            const QImage thumb = strip.scaledToHeight(std::max(8, r.height() - 14), Qt::SmoothTransformation);
+            // scaled once per height, not on every repaint
+            const int th = std::max(8, r.height() - 14);
+            const QString key = m->id + ":" + QString::number(th) + ":" + QString::number(strip.cacheKey());
+            QImage thumb = m_thumbCache.value(key);
+            if (thumb.isNull()) {
+                if (m_thumbCache.size() > 256)
+                    m_thumbCache.clear();
+                thumb = strip.scaledToHeight(th, Qt::SmoothTransformation);
+                m_thumbCache.insert(key, thumb);
+            }
             for (int x = r.left(); x < r.right(); x += thumb.width() + 2)
                 p.drawImage(QPoint(x, r.top() + 14), thumb);
             p.setOpacity(ghost ? 0.55 : 1.0);
@@ -722,6 +753,8 @@ void TimelineWidget::paintClip(QPainter &p, const Row &row, const Clip &c, const
             const int x0 = std::max(r.left(), headerWidth());
             const int x1 = std::min(r.right(), viewport()->width());
             const double gain = std::pow(10.0, c.audio.gainDb / 20.0);
+            QVector<QLine> bars;
+            bars.reserve(std::max(0, x1 - x0));
             for (int x = x0; x < x1; ++x) {
                 const double tl0 = (x - r.left()) / m_pxPerSec, tl1 = (x + 1 - r.left()) / m_pxPerSec;
                 const double s0 = c.in / 1e6 + tl0 * c.speed, s1 = c.in / 1e6 + tl1 * c.speed;
@@ -730,15 +763,18 @@ void TimelineWidget::paintClip(QPainter &p, const Row &row, const Clip &c, const
                 for (int i = std::max(0, i0); i < std::min(int(pk.size()), i1); ++i)
                     v = std::max(v, int(pk[i]));
                 const int hgt = int(std::min(1.0, v / 255.0 * gain) * amp);
-                p.drawLine(x, mid - hgt, x, mid + hgt);
+                bars.append(QLine(x, mid - hgt, x, mid + hgt));
             }
+            p.setRenderHint(QPainter::Antialiasing, false); // 1-px bars: no need to antialias
+            p.drawLines(bars);
+            p.setRenderHint(QPainter::Antialiasing, true);
         }
     }
-    if (c.type == ClipType::Title || c.type == ClipType::Shape || c.type == ClipType::Effect) {
+    if ((c.type == ClipType::Title || c.type == ClipType::Shape || c.type == ClipType::Effect) && r.height() >= 30) {
         p.setPen(QColor(255, 255, 255, 200));
         QString what;
         if (c.type == ClipType::Title)
-            what = "T  " + c.title.text.simplified();
+            what = "T  " + QString(c.title.text).remove('*').simplified();
         else if (c.type == ClipType::Shape)
             what = "■  " + c.shape.shape;
         else {
@@ -965,7 +1001,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent *e)
         QStringList ids;
         for (const QString &id : m_doc->selectedClips()) {
             if (m_dragLinked) {
-                for (Clip *lc : const_cast<Project &>(m_doc->project()).linkedClips(id))
+                for (const Clip *lc : m_doc->project().linkedClips(id))
                     if (!ids.contains(lc->id))
                         ids << lc->id;
             } else if (!ids.contains(id)) {

@@ -42,7 +42,7 @@ public:
     void setShowSafeArea(bool on);
     bool showSafeArea() const { return m_safeArea; }
     QImage currentFrame() const { return m_frame; }
-    void invalidate(); // project changed: rebuild overlay and recompose
+    void invalidate(); // project changed: rebuild overlay and recompose (coalesced, next event-loop pass)
     // FrameSource: latest decoded picture for a clip (players) or the still image.
     QImage frame(const Clip &clip, const MediaAsset &media, TimeUs sourceTime) override;
     // Renders a full-quality frame at t (for snapshots), using the given source.
@@ -83,9 +83,13 @@ private:
     Document *m_doc;
     QHash<QString, Slot *> m_slots;
     QHash<QString, QImage> m_stills;
-    OverlayScene m_overlay;
+    mutable OverlayScene m_overlay;
     QTimer m_timer;
     QTimer m_composeTimer;
+    QTimer m_invalidateTimer;       // coalesces several project changes into one rebuild
+    mutable bool m_overlayDirty = true;
+    void ensureOverlay() const;     // rebuild the caption/title overlay now if it is stale
+    void doInvalidate();
     QElapsedTimer m_clock;
     TimeUs m_clockBase = 0;
     bool m_playing = false;

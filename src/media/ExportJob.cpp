@@ -89,6 +89,11 @@ void ExportJob::run()
     const QString partial = outInfo.absolutePath() + "/" + outInfo.completeBaseName() + ".partial." + (gif ? QString("mp4") : outInfo.suffix());
     QStringList args = m_plan.args;
     args.replace(args.indexOf("OUTPUT_PLACEHOLDER"), partial);
+    // Use the filter-script option this FFmpeg really accepts (version strings of snapshot
+    // builds can't be trusted; -filter_complex_script no longer exists in FFmpeg 8+).
+    for (int i = 0; i < args.size(); ++i)
+        if (args[i] == "-/filter_complex" || args[i] == "-filter_complex_script")
+            args[i] = Tools::ffmpegFilterScriptOption();
 
     L("Shyftr Studio export " + QDateTime::currentDateTime().toString(Qt::ISODate));
     L("ffmpeg: " + ffmpeg + " (" + Tools::ffmpegVersionString() + ")");

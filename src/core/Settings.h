@@ -33,6 +33,7 @@ struct Settings {
     int undoLimit = 100;
     bool startInQuickMode = true;
     bool snapping = true;
+    bool captionDragAll = false; // dragging a caption on the video moves all captions (else just that one)
     // Tools
     QString ffmpegPath;
     QString ffprobePath;

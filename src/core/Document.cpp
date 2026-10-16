@@ -11,7 +11,7 @@ namespace {
 
 class SnapshotCommand : public QUndoCommand {
 public:
-    SnapshotCommand(Document *doc, const QString &text, QByteArray before, QByteArray after, const QString &mergeKey)
+    SnapshotCommand(Document *doc, const QString &text, Project before, Project after, const QString &mergeKey)
         : QUndoCommand(text), m_doc(doc), m_before(std::move(before)), m_after(std::move(after)),
           m_mergeKey(mergeKey)
     {
@@ -37,7 +37,7 @@ public:
 
 private:
     Document *m_doc;
-    QByteArray m_before, m_after;
+    Project m_before, m_after; // implicitly shared: only what an edit changed takes memory
     QString m_mergeKey;
     bool m_first = true;
 };
@@ -84,31 +84,17 @@ QString Document::projectFile() const
     return m_dir.isEmpty() ? QString() : m_dir + "/project.json";
 }
 
-QByteArray Document::snapshot() const
+void Document::restoreSnapshot(const Project &snap)
 {
-    Project copy = m_project;
-    copy.playhead = 0; // playhead is not part of undo history
-    return qCompress(ProjectSerializer::toBytes(copy, true), 3);
-}
-
-void Document::restoreSnapshot(const QByteArray &compressedJson)
-{
-    Project p;
-    QString err;
-    const TimeUs playhead = m_project.playhead;
-    const TimeUs in = m_project.inPoint, out = m_project.outPoint;
-    if (!ProjectSerializer::fromBytes(qUncompress(compressedJson), p, &err)) {
-        qWarning("Undo snapshot could not be restored: %s", qPrintable(err));
-        return;
-    }
-    // keep runtime-only media state (missing flags) intact
-    for (auto &m : p.media)
-        if (const MediaAsset *old = m_project.findMedia(m.id))
-            m.missing = old->missing;
+    Project p = snap;
+    // keep runtime/view state that is not part of the undo history
+    for (int i = 0; i < p.media.size(); ++i)
+        if (const MediaAsset *old = m_project.findMedia(p.media[i].id); old && old->missing != p.media[i].missing)
+            p.media[i].missing = old->missing;
+    p.playhead = m_project.playhead;
+    p.inPoint = m_project.inPoint;
+    p.outPoint = m_project.outPoint;
     m_project = p;
-    m_project.playhead = playhead;
-    m_project.inPoint = in;
-    m_project.outPoint = out;
     // prune selection
     QStringList sel;
     for (const QString &id : m_selectedClips)
@@ -125,7 +111,7 @@ bool Document::apply(const QString &description, const std::function<bool(Projec
 {
     if (!m_open)
         return false;
-    const QByteArray before = snapshot();
+    const Project before = m_project; // shares all data until the edit changes something
     Project working = m_project;
     if (!fn(working))
         return false;
@@ -135,11 +121,10 @@ bool Document::apply(const QString &description, const std::function<bool(Projec
         qWarning("Edit '%s' rejected: %s", qPrintable(description), qPrintable(problems.join("; ")));
         return false;
     }
-    m_project = working;
-    const QByteArray after = snapshot();
-    if (after == before)
+    if (ProjectSerializer::sameContent(before, working))
         return false;
-    m_undo.push(new SnapshotCommand(this, description, before, after, mergeKey));
+    m_project = working;
+    m_undo.push(new SnapshotCommand(this, description, before, m_project, mergeKey));
     ++m_changeCounter;
     QStringList sel;
     for (const QString &id : m_selectedClips)

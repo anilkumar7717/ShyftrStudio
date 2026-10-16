@@ -99,7 +99,13 @@ QuickPanel::QuickPanel(Document *doc, QWidget *parent) : QWidget(parent), m_doc(
     }
     {
         QList<QWidget *> extras;
-        for (const auto &[label, cat] : QVector<QPair<QString, QString>>{{"Text", "Text"}, {"Stickers", "Stickers"}, {"Effects", "Effects"},
+        auto *addText = new QToolButton;
+        addText->setText("+ Add text");
+        addText->setToolTip("Adds text at the playhead — type it right on the video (T)");
+        addText->setMinimumWidth(64);
+        connect(addText, &QToolButton::clicked, this, [this]() { emit toolRequested("text"); });
+        extras << addText;
+        for (const auto &[label, cat] : QVector<QPair<QString, QString>>{{"Text styles", "Text"}, {"Stickers", "Stickers"}, {"Effects", "Effects"},
                                                                           {"Transitions", "Transitions"}, {"Filters", "Filters"}}) {
             auto *b = new QToolButton;
             b->setText(label);

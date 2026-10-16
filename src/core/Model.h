@@ -124,6 +124,16 @@ struct TitleProps {
     double letterSpacingPct = 0;
     double boxPaddingPct = 0.4;       // of font size
     double boxRadiusPct = 0.16;       // of font size
+    // text formatting
+    bool underline = false;
+    QString textCase;                 // "" (as typed) | upper | lower | title
+    double lineSpacing = 1.1;         // line height as a multiple of the font height
+    QColor glowColor = QColor(0, 0, 0, 0);      // soft neon glow around the letters
+    QColor highlightColor = QColor(255, 212, 59); // colour of words written as *word*
+    QString styleId;                  // last style preset applied (informational)
+
+    // What is drawn: case applied and *emphasis* markers removed.
+    QString displayText() const;
 };
 
 struct ShapeProps {
@@ -264,6 +274,8 @@ struct Project {
     const Transcript *findTranscript(const QString &id) const;
     const Speaker *findSpeaker(int id) const;
     QVector<Clip *> linkedClips(const QString &clipId); // includes the clip itself
+    QVector<const Clip *> linkedClips(const QString &clipId) const;
+    QVector<QPair<int, int>> linkedClipIndices(const QString &clipId) const; // (track, clip) indices
     TimeUs duration() const;
     int trackIndex(const QString &id) const;
     QVector<int> trackIndicesOfKind(TrackKind k) const;

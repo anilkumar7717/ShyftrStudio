@@ -47,8 +47,7 @@ public:
     int changeCounter() const { return m_changeCounter; }
 
     // Restores a snapshot (used by undo commands).
-    void restoreSnapshot(const QByteArray &compressedJson);
-    QByteArray snapshot() const;
+    void restoreSnapshot(const Project &snapshot);
 
     // Non-undoable metadata edits (export settings, UI mode) that still need saving.
     void updateMeta(const std::function<void(Project &)> &fn);

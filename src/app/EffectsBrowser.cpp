@@ -1,4 +1,6 @@
 #include "EffectsBrowser.h"
+#include "../captions/TextStyles.h"
+#include "TextStyleUi.h"
 #include "../captions/OverlayRenderer.h"
 #include "../core/TimelineOps.h"
 #include "../media/ColorMath.h"
@@ -202,6 +204,85 @@ QVector<TextTemplate> textTemplates()
             p.boxRadiusPct = 0.2;
             p.animation = "zoom";
             p.loop = "float";
+        }),
+        // ---- professional layouts built on the text styles
+        T("pro-lower-third", "Lower third pro", [](TitleProps &p) {
+            TextStyles::apply(p, "box-dark");
+            p.text = "*Alex Morgan*\nCreative Director";
+            p.sizePct = 0.042;
+            p.align = "left";
+            p.x = 0.27;
+            p.y = 0.83;
+            p.lineSpacing = 1.25;
+            p.highlightColor = QColor("#FFD43B");
+            p.animation = "slideRight";
+        }),
+        T("pro-name-tag", "Name tag", [](TitleProps &p) {
+            TextStyles::apply(p, "box-white");
+            p.text = "SARAH LEE · *Founder*";
+            p.sizePct = 0.04;
+            p.align = "left";
+            p.x = 0.25;
+            p.y = 0.86;
+            p.highlightColor = QColor("#4263EB");
+            p.animation = "slideUp";
+        }),
+        T("pro-chapter", "Chapter title", [](TitleProps &p) {
+            TextStyles::apply(p, "cinematic");
+            p.text = "Chapter One\n*The beginning*";
+            p.sizePct = 0.07;
+            p.highlightColor = QColor("#E9C46A");
+            p.animation = "blur";
+        }),
+        T("pro-quote", "Quote card", [](TitleProps &p) {
+            TextStyles::apply(p, "serif-quote");
+            p.text = "“Make it *simple*,\nbut significant.”";
+            p.sizePct = 0.06;
+            p.animation = "fade";
+        }),
+        T("pro-breaking", "Breaking news", [](TitleProps &p) {
+            TextStyles::apply(p, "news");
+            p.text = "BREAKING: *your headline here*";
+            p.sizePct = 0.045;
+            p.highlightColor = QColor("#FFE066");
+            p.align = "left";
+            p.x = 0.38;
+            p.y = 0.88;
+            p.animation = "slideRight";
+        }),
+        T("pro-youtube", "YouTube title", [](TitleProps &p) {
+            TextStyles::apply(p, "youtube-pop");
+            p.text = "I tried *this* for 30 days";
+            p.sizePct = 0.085;
+            p.animation = "pop";
+        }),
+        T("pro-neon", "Neon night", [](TitleProps &p) {
+            TextStyles::apply(p, "neon-pink");
+            p.text = "Night *Vibes*";
+            p.sizePct = 0.1;
+            p.highlightColor = QColor("#7DF9FF");
+            p.loop = "glow";
+            p.animation = "zoom";
+        }),
+        T("pro-luxury", "Luxury brand", [](TitleProps &p) {
+            TextStyles::apply(p, "luxury");
+            p.text = "Atelier";
+            p.sizePct = 0.09;
+            p.animation = "fade";
+        }),
+        T("pro-subscribe", "Subscribe CTA", [](TitleProps &p) {
+            TextStyles::apply(p, "pill-blue");
+            p.text = "Subscribe for *more*";
+            p.sizePct = 0.045;
+            p.y = 0.85;
+            p.highlightColor = QColor("#FFE066");
+            p.animation = "bounce";
+        }),
+        T("pro-highlight", "Key point", [](TitleProps &p) {
+            TextStyles::apply(p, "marker");
+            p.text = "Key takeaway";
+            p.sizePct = 0.06;
+            p.animation = "pop";
         }),
     };
 }
@@ -452,6 +533,12 @@ void EffectsBrowser::build()
         text->addItem(makeItem(textThumb(wide, t.props), t.label, "text:" + t.id,
                                t.label + "\nDouble-click to add at the playhead, or drag onto the video"));
 
+    // Text styles: drop on a text to restyle it, double-click to restyle the selected text(s)
+    LibraryList *ts = addPage("Text styles", wide.width(), wide.height());
+    for (const TextStyle &style : TextStyles::all())
+        ts->addItem(makeItem(TextStyleUi::thumbnail(style.id, wide).pixmap(wide).toImage(), style.label, "textstyle:" + style.id,
+                             style.label + " (" + style.category + ")\nDrop it on a text, or double-click to style the selected text"));
+
     // Stickers
     LibraryList *st = addPage("Stickers", square.width(), square.height());
     for (const QString &e : Library::stickers())
@@ -566,6 +653,8 @@ void EffectsBrowser::build()
 
 QString EffectsBrowser::dropKind(const QString &id)
 {
+    if (id.startsWith("textstyle:"))
+        return "either";
     if (id.startsWith("text:") || id.startsWith("sticker:") || id.startsWith("title-") || id.startsWith("shape-"))
         return "clip";
     if (id.startsWith("fx:") || id.startsWith("look:"))
@@ -647,7 +736,39 @@ void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QS
     };
     const TimeUs half = 500 * kUsPerMs;
 
-    // ---- new library items
+    // ---- text styles: restyle the target / selected texts (only those), or add a new styled text
+    if (id.startsWith("textstyle:")) {
+        const QString sid = id.mid(10);
+        const TextStyle *style = TextStyles::find(sid);
+        if (!style)
+            return;
+        QStringList texts;
+        for (const QString &cid : sel)
+            if (const Clip *c = proj.findClip(cid); c && c->type == ClipType::Title)
+                texts << cid;
+        if (!texts.isEmpty()) {
+            forClips(texts, "Text style: " + style->label, [sid](Clip &c, Track &) { TextStyles::apply(c.title, sid); });
+            emit statusMessage(QString("%1 applied to %2 text%3").arg(style->label).arg(texts.size()).arg(texts.size() > 1 ? "s" : ""));
+            return;
+        }
+        TitleProps tp;
+        tp.text = "Your text";
+        TextStyles::apply(tp, sid);
+        tp.sizePct = 0.075;
+        if (placed) {
+            tp.x = pos.x();
+            tp.y = pos.y();
+        }
+        QString newId;
+        m_doc->apply("Add text", [&](Project &p) {
+            newId = TimelineOps::addTitleClip(p, m_targetTrack, at, 4 * kUsPerSec, tp);
+            return !newId.isEmpty();
+        });
+        if (!newId.isEmpty())
+            m_doc->setSelectedClips({newId});
+        emit statusMessage("Text added — double-click it on the video to type your words");
+        return;
+    }
     if (id.startsWith("text:")) {
         for (const auto &t : Library::textTemplates())
             if ("text:" + t.id == id) {
@@ -793,7 +914,7 @@ void EffectsBrowser::applyEffect(const QString &id, const QPointF &pos, const QS
             if (t->kind == TrackKind::Audio)
                 audio << cid;
             else
-                for (const Clip *l : const_cast<Project &>(proj).linkedClips(cid)) {
+                for (const Clip *l : proj.linkedClips(cid)) {
                     const Track *lt = nullptr;
                     proj.findClip(l->id, &lt);
                     if (lt && lt->kind == TrackKind::Audio)

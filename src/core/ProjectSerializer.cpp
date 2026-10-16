@@ -167,6 +167,18 @@ QJsonObject ProjectSerializer::clipToJson(const Clip &c)
         to["letterSpacingPct"] = t.letterSpacingPct;
         to["boxPaddingPct"] = t.boxPaddingPct;
         to["boxRadiusPct"] = t.boxRadiusPct;
+        if (t.underline)
+            to["underline"] = true;
+        if (!t.textCase.isEmpty())
+            to["textCase"] = t.textCase;
+        if (t.lineSpacing != TitleProps().lineSpacing)
+            to["lineSpacing"] = t.lineSpacing;
+        if (t.glowColor.alpha() > 0)
+            to["glowColor"] = colorToString(t.glowColor);
+        if (t.highlightColor != TitleProps().highlightColor)
+            to["highlightColor"] = colorToString(t.highlightColor);
+        if (!t.styleId.isEmpty())
+            to["styleId"] = t.styleId;
         o["title"] = to;
     }
     if (!c.fx.isDefault())
@@ -256,6 +268,12 @@ Clip ProjectSerializer::clipFromJson(const QJsonObject &o)
         t.letterSpacingPct = D(to, "letterSpacingPct");
         t.boxPaddingPct = D(to, "boxPaddingPct", t.boxPaddingPct);
         t.boxRadiusPct = D(to, "boxRadiusPct", t.boxRadiusPct);
+        t.underline = B(to, "underline");
+        t.textCase = S(to, "textCase");
+        t.lineSpacing = std::clamp(D(to, "lineSpacing", t.lineSpacing), 0.6, 3.0);
+        t.glowColor = colorFromString(S(to, "glowColor"), t.glowColor);
+        t.highlightColor = colorFromString(S(to, "highlightColor"), t.highlightColor);
+        t.styleId = S(to, "styleId");
         c.title = t;
     }
     if (o.contains("shape")) {
@@ -425,6 +443,69 @@ QJsonObject ProjectSerializer::toJson(const Project &p)
     root["uiMode"] = p.uiMode;
     root["exportSettings"] = p.exportSettings;
     return root;
+}
+
+bool ProjectSerializer::sameContent(const Project &a, const Project &b)
+{
+    if (a.id != b.id || a.name != b.name || a.created != b.created || a.inPoint != b.inPoint || a.outPoint != b.outPoint
+        || a.uiMode != b.uiMode || a.exportSettings != b.exportSettings || a.schemaVersion != b.schemaVersion)
+        return false;
+    if (a.canvas.width != b.canvas.width || a.canvas.height != b.canvas.height || !(a.canvas.fps == b.canvas.fps)
+        || a.canvas.sampleRate != b.canvas.sampleRate || a.canvas.background != b.canvas.background)
+        return false;
+    if (!a.media.isSharedWith(b.media)) {
+        if (a.media.size() != b.media.size())
+            return false;
+        for (int i = 0; i < a.media.size(); ++i)
+            if (mediaToJson(a.media[i]) != mediaToJson(b.media[i]) || a.media[i].missing != b.media[i].missing)
+                return false;
+    }
+    if (!a.tracks.isSharedWith(b.tracks)) {
+        if (a.tracks.size() != b.tracks.size())
+            return false;
+        for (int i = 0; i < a.tracks.size(); ++i) {
+            const Track &x = a.tracks[i], &y = b.tracks[i];
+            if (x.id != y.id || x.kind != y.kind || x.name != y.name || x.muted != y.muted || x.locked != y.locked
+                || x.hidden != y.hidden || x.volumeDb != y.volumeDb || x.transcriptId != y.transcriptId
+                || x.styleId != y.styleId || x.styleOverrides != y.styleOverrides || x.burnIn != y.burnIn || x.duck != y.duck)
+                return false;
+            if (x.clips.isSharedWith(y.clips))
+                continue;
+            if (x.clips.size() != y.clips.size())
+                return false;
+            for (int c = 0; c < x.clips.size(); ++c)
+                if (clipToJson(x.clips[c]) != clipToJson(y.clips[c]))
+                    return false;
+        }
+    }
+    if (!a.transcripts.isSharedWith(b.transcripts)) {
+        if (a.transcripts.size() != b.transcripts.size())
+            return false;
+        for (int i = 0; i < a.transcripts.size(); ++i) {
+            const Transcript &x = a.transcripts[i], &y = b.transcripts[i];
+            if (x.words.isSharedWith(y.words) && x.cues.isSharedWith(y.cues) && x.id == y.id && x.mediaId == y.mediaId
+                && x.language == y.language && x.model == y.model && x.created == y.created)
+                continue;
+            if (transcriptToJson(x) != transcriptToJson(y))
+                return false;
+        }
+    }
+    if (!a.speakers.isSharedWith(b.speakers)) {
+        if (a.speakers.size() != b.speakers.size())
+            return false;
+        for (int i = 0; i < a.speakers.size(); ++i)
+            if (a.speakers[i].id != b.speakers[i].id || a.speakers[i].name != b.speakers[i].name
+                || a.speakers[i].color != b.speakers[i].color)
+                return false;
+    }
+    if (!a.markers.isSharedWith(b.markers)) {
+        if (a.markers.size() != b.markers.size())
+            return false;
+        for (int i = 0; i < a.markers.size(); ++i)
+            if (a.markers[i].t != b.markers[i].t || a.markers[i].label != b.markers[i].label || a.markers[i].color != b.markers[i].color)
+                return false;
+    }
+    return true;
 }
 
 QByteArray ProjectSerializer::toBytes(const Project &p, bool compact)

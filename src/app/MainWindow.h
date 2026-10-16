@@ -40,6 +40,8 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *e) override;
+    void resizeEvent(QResizeEvent *e) override;
+    bool eventFilter(QObject *o, QEvent *e) override;
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dropEvent(QDropEvent *e) override;
 
@@ -71,6 +73,7 @@ private:
     void fitToScreen();
     void editCaptionInViewer(const QRect &anchor = QRect());
     void editTitleInViewer(const QString &clipId, const QRect &anchor);
+    void addText(); // new text at the playhead, typed straight on the video
 
     // editing
     void importDialog();
@@ -113,6 +116,13 @@ private:
     QPointer<ExportDialog> m_exportDialog;
     QLockFile *m_lock = nullptr;
     QTimer m_autosave;
+    // Responsive panels: proportions survive window resizes and maximising.
+    QTimer m_relayoutTimer;
+    double m_timelineFrac = 0.36, m_leftFrac = -1, m_rightFrac = -1;
+    bool m_layoutBusy = false;
+    QSize m_layoutWindowSize; // window size when the panels were last laid out
+    void keepDockProportions();
+    void rememberDockProportions();
     int m_lastAutosaveCounter = -1;
     bool m_quickMode = true;
     bool m_switchingMode = false;

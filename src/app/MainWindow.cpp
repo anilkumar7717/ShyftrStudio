@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+#include "../captions/TextStyles.h"
+#include "TextStyleUi.h"
 #include "../captions/CaptionEngine.h"
 #include "../captions/CaptionStyle.h"
 #include "../core/ProjectSerializer.h"
@@ -51,6 +53,9 @@
 #include <QTextBrowser>
 #include <QTextEdit>
 #include <QTimer>
+#include <memory>
+#include <QScrollArea>
+#include <QResizeEvent>
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
@@ -109,6 +114,17 @@ void MainWindow::buildUi()
         addDockWidget(area, d);
         return d;
     };
+    // Side panels scroll instead of forcing the window layout to their full height, so on short
+    // screens they never squeeze the timeline (tabbed docks share the tallest minimum height).
+    auto scrolling = [](QWidget *w) {
+        auto *sa = new QScrollArea;
+        sa->setWidget(w);
+        sa->setWidgetResizable(true);
+        sa->setFrameShape(QFrame::NoFrame);
+        sa->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        sa->setMinimumHeight(60);
+        return sa;
+    };
     m_timeline = new TimelineWidget(&m_doc, m_cache);
     m_mediaBin = new MediaBinWidget(&m_doc, m_cache);
     m_inspector = new InspectorWidget(&m_doc);
@@ -117,18 +133,24 @@ void MainWindow::buildUi()
     m_quick = new QuickPanel(&m_doc);
 
     m_timelineDock = dock("Timeline", "timelineDock", m_timeline, Qt::BottomDockWidgetArea);
-    m_mediaDock = dock("Media", "mediaDock", m_mediaBin, Qt::LeftDockWidgetArea);
-    m_effectsDock = dock("Library", "effectsDock", m_effects, Qt::LeftDockWidgetArea);
+    m_mediaDock = dock("Media", "mediaDock", scrolling(m_mediaBin), Qt::LeftDockWidgetArea);
+    m_effectsDock = dock("Library", "effectsDock", scrolling(m_effects), Qt::LeftDockWidgetArea);
     m_tools = new ToolsController(&m_doc, m_engine, this);
     m_inspectorDock = dock("Inspector", "inspectorDock", m_inspector, Qt::RightDockWidgetArea);
-    m_subtitleDock = dock("AI Subtitles", "subtitleDock", m_subtitles, Qt::RightDockWidgetArea);
-    m_quickDock = dock("Quick Editor", "quickDock", m_quick, Qt::RightDockWidgetArea);
+    m_subtitleDock = dock("AI Subtitles", "subtitleDock", scrolling(m_subtitles), Qt::RightDockWidgetArea);
+    m_quickDock = dock("Quick Editor", "quickDock", scrolling(m_quick), Qt::RightDockWidgetArea);
     tabifyDockWidget(m_mediaDock, m_effectsDock);
     tabifyDockWidget(m_inspectorDock, m_subtitleDock);
     m_mediaDock->raise();
     m_inspectorDock->raise();
     for (QDockWidget *d : {m_mediaDock, m_effectsDock, m_inspectorDock, m_subtitleDock, m_quickDock})
         d->widget()->setMinimumWidth(200);
+    m_timeline->setMinimumHeight(110);
+    m_relayoutTimer.setSingleShot(true);
+    m_relayoutTimer.setInterval(120);
+    connect(&m_relayoutTimer, &QTimer::timeout, this, &MainWindow::keepDockProportions);
+    for (QDockWidget *d : {m_mediaDock, m_effectsDock, m_inspectorDock, m_subtitleDock, m_quickDock, m_timelineDock})
+        d->installEventFilter(this);
 
     m_saveState = new QLabel;
     m_offline = new QLabel("● Offline · all processing on this computer");
@@ -165,6 +187,7 @@ void MainWindow::buildUi()
     });
     connect(m_viewer, &ViewerWidget::captionEditRequested, this, [this](const QRect &anchor) { editCaptionInViewer(anchor); });
     connect(m_viewer, &ViewerWidget::titleEditRequested, this, &MainWindow::editTitleInViewer);
+    connect(m_viewer, &ViewerWidget::addTextRequested, this, &MainWindow::addText);
     connect(m_viewer, &ViewerWidget::statusMessage, this, [this](const QString &m) { statusBar()->showMessage(m, 6000); });
     connect(m_viewer, &ViewerWidget::effectDropped, this, [this](const QString &id, const QPointF &pos) {
         m_effects->applyEffect(id, pos);
@@ -192,6 +215,8 @@ void MainWindow::buildUi()
     connect(m_quick, &QuickPanel::toolRequested, this, [this](const QString &tool) {
         if (tool == "tts")
             m_tools->textToSpeech();
+        else if (tool == "text")
+            addText();
         else if (tool == "silences")
             m_tools->removeSilences();
     });
@@ -381,7 +406,8 @@ void MainWindow::buildActions()
     act("tl.addAudio", "Add Audio Track", QKeySequence(), [this]() {
         m_doc.apply("Add track", [](Project &p) { return !TimelineOps::addTrack(p, TrackKind::Audio).isEmpty(); });
     });
-    act("tl.title", "Add Title at Playhead", QKeySequence("T"), [this]() { m_effects->applyEffect("title-center"); }, true);
+    act("tl.addText", "Add Text", QKeySequence("T"), [this]() { addText(); }, true);
+    act("tl.title", "Add Big Title at Playhead", QKeySequence(), [this]() { m_effects->applyEffect("title-center"); }, true);
     act("tl.lowerThird", "Add Lower Third", QKeySequence("Shift+T"), [this]() { m_effects->applyEffect("title-lower"); }, true);
 
     // Tools (all local)
@@ -545,7 +571,7 @@ void MainWindow::buildMenus()
     edit->addAction(m_actions["edit.deselect"]);
 
     auto *tl = menuBar()->addMenu("&Timeline");
-    for (const char *id : {"tl.addVideo", "tl.addAudio", "tl.title", "tl.lowerThird"})
+    for (const char *id : {"tl.addVideo", "tl.addAudio", "tl.addText", "tl.title", "tl.lowerThird"})
         tl->addAction(m_actions[id]);
     tl->addSeparator();
     for (const char *id : {"mark.in", "mark.out", "mark.clear"})
@@ -620,6 +646,9 @@ void MainWindow::buildMenus()
         tb->addAction(m_actions[id]);
     tb->addSeparator();
     tb->addAction(m_actions["file.import"]);
+    m_actions["tl.addText"]->setIconText("T  Add Text");
+    m_actions["tl.addText"]->setToolTip("Add text at the playhead and type it on the video (T)");
+    tb->addAction(m_actions["tl.addText"]);
     tb->addAction(m_actions["edit.split"]);
     tb->addAction(m_actions["tl.snap"]);
     tb->addAction(m_actions["cap.generate"]);
@@ -668,7 +697,8 @@ static QString layoutKey(bool quick)
 void MainWindow::applyDockProportions(bool quick)
 {
     const int W = width(), H = height();
-    const int timelineH = std::clamp(int(H * 0.30), 160, 440);
+    m_layoutBusy = true;
+    const int timelineH = std::clamp(int(H * 0.36), 180, std::max(180, int(H * 0.6)));
     resizeDocks({m_timelineDock}, {timelineH}, Qt::Vertical);
     if (quick) {
         const int right = std::clamp(int(W * 0.27), 300, 460);
@@ -683,6 +713,70 @@ void MainWindow::applyDockProportions(bool quick)
         const int right = std::clamp(int(W * 0.25), 280, 480);
         resizeDocks({m_mediaDock, m_inspectorDock}, {left, right}, Qt::Horizontal);
     }
+    m_layoutBusy = false;
+    m_layoutWindowSize = size();
+    m_timelineFrac = std::clamp(double(timelineH) / std::max(1, H), 0.12, 0.7);
+    m_leftFrac = m_rightFrac = -1;
+    QTimer::singleShot(0, this, [this]() { rememberDockProportions(); });
+}
+
+void MainWindow::rememberDockProportions()
+{
+    // only a divider the user dragged counts, not docks following a window resize
+    if (m_layoutBusy || m_relayoutTimer.isActive() || height() <= 0 || width() <= 0 || size() != m_layoutWindowSize)
+        return;
+    if (m_timelineDock && m_timelineDock->isVisible() && !m_timelineDock->isFloating())
+        m_timelineFrac = std::clamp(double(m_timelineDock->height()) / height(), 0.12, 0.7);
+    QDockWidget *left = m_quickMode ? m_effectsDock : m_mediaDock;
+    QDockWidget *right = m_quickMode ? m_quickDock : m_inspectorDock;
+    if (left && left->isVisible() && !left->isFloating())
+        m_leftFrac = double(left->width()) / width();
+    if (right && right->isVisible() && !right->isFloating())
+        m_rightFrac = double(right->width()) / width();
+}
+
+void MainWindow::resizeEvent(QResizeEvent *e)
+{
+    QMainWindow::resizeEvent(e);
+    // Docks keep their pixel size when the window changes; re-apply the proportions the
+    // user had, once the resize settles, so maximising gives the timeline and panels more room.
+    if (e->oldSize().isValid() && e->oldSize() != e->size())
+        m_relayoutTimer.start();
+}
+
+bool MainWindow::eventFilter(QObject *o, QEvent *e)
+{
+    // A dock changed size without the window changing size: the user dragged a divider.
+    if (e->type() == QEvent::Resize && !m_layoutBusy && !m_relayoutTimer.isActive())
+        if (qobject_cast<QDockWidget *>(o))
+            QTimer::singleShot(0, this, [this]() { rememberDockProportions(); });
+    return QMainWindow::eventFilter(o, e);
+}
+
+void MainWindow::keepDockProportions()
+{
+    if (!m_doc.isOpen() || !m_timelineDock || !m_timelineDock->isVisible())
+        return;
+    const int W = width(), H = height();
+    m_layoutBusy = true;
+    if (!m_timelineDock->isFloating())
+        resizeDocks({m_timelineDock}, {std::clamp(int(H * m_timelineFrac), 150, std::max(150, int(H * 0.65)))}, Qt::Vertical);
+    QDockWidget *left = m_quickMode ? m_effectsDock : m_mediaDock;
+    QDockWidget *right = m_quickMode ? m_quickDock : m_inspectorDock;
+    QList<QDockWidget *> docks;
+    QList<int> sizes;
+    if (left && left->isVisible() && !left->isFloating() && m_leftFrac > 0) {
+        docks << left;
+        sizes << std::clamp(int(W * m_leftFrac), 200, std::max(200, W / 3));
+    }
+    if (right && right->isVisible() && !right->isFloating() && m_rightFrac > 0) {
+        docks << right;
+        sizes << std::clamp(int(W * m_rightFrac), 240, std::max(240, W * 2 / 5));
+    }
+    if (!docks.isEmpty())
+        resizeDocks(docks, sizes, Qt::Horizontal);
+    m_layoutBusy = false;
+    m_layoutWindowSize = size();
 }
 
 void MainWindow::setQuickMode(bool quick)
@@ -737,9 +831,16 @@ void MainWindow::setQuickMode(bool quick)
     QTimer::singleShot(0, this, [this, quick, restored]() {
         // Re-fit when there is no saved layout, or the saved one leaves the video too small
         // (e.g. it was saved on a bigger display).
-        const bool cramped = m_viewer->width() < width() * 0.35 || m_viewer->height() < height() * 0.30;
+        // ... or squeezes the timeline / inspector so they are hard to use
+        const bool cramped = m_viewer->width() < width() * 0.35 || m_viewer->height() < height() * 0.30
+                             || m_timelineDock->height() < height() * 0.2
+                             || (!quick && m_inspectorDock->isVisible() && m_inspectorDock->width() < 240);
         if (!restored || cramped)
             applyDockProportions(quick);
+        else {
+            m_layoutWindowSize = size();
+            rememberDockProportions();
+        }
     });
     updateTitle();
 }
@@ -1277,7 +1378,7 @@ void MainWindow::copySelection(bool cut)
     TimeUs minStart = std::numeric_limits<TimeUs>::max();
     QStringList ids;
     for (const QString &id : m_doc.selectedClips())
-        for (Clip *c : const_cast<Project &>(p).linkedClips(id))
+        for (const Clip *c : p.linkedClips(id))
             if (!ids.contains(c->id))
                 ids << c->id;
     for (const QString &id : ids)
@@ -1386,21 +1487,71 @@ void MainWindow::editTitleInViewer(const QString &clipId, const QRect &anchor)
     if (!c || c->type != ClipType::Title)
         return;
     m_engine->pause();
-    // single-line editor: line breaks are shown as " | "
-    QString text = c->title.text;
-    text.replace('\n', " | ");
-    m_viewer->startInlineEdit(text, [this, clipId](const QString &newText) {
-        QString t = newText;
-        t.replace(" | ", "\n");
-        if (m_doc.apply("Edit title", [&](Project &p) {
+    const QString original = c->title.text;
+    QFont f(TextStyleUi::installedFamily(c->title.fontFamily));
+    f.setWeight(QFont::Weight(std::clamp(c->title.weight, 100, 900)));
+    f.setItalic(c->title.italic);
+    const QString mergeKey = "type-text:" + clipId + ":" + QString::number(QDateTime::currentMSecsSinceEpoch());
+    auto changed = std::make_shared<bool>(false);
+    // the video follows the typing; the whole edit is one undo step
+    auto live = [this, clipId, mergeKey, changed](const QString &t) {
+        if (m_doc.apply("Edit text", [&](Project &p) {
                 Clip *cl = p.findClip(clipId);
                 if (!cl || cl->title.text == t)
                     return false;
                 cl->title.text = t;
+                cl->name = QString(t).remove('*').simplified().left(24);
                 return true;
-            }))
-            statusBar()->showMessage("Title updated", 2500);
-    }, anchor);
+            }, mergeKey))
+            *changed = true;
+    };
+    auto done = [this, clipId, original, changed](bool accepted) {
+        const Clip *cl = m_doc.project().findClip(clipId);
+        if (!accepted && *changed && cl) {
+            // Esc: put the words back as they were
+            m_doc.apply("Edit text", [&](Project &p) {
+                Clip *x = p.findClip(clipId);
+                if (!x || x->title.text == original)
+                    return false;
+                x->title.text = original;
+                x->name = QString(original).remove('*').simplified().left(24);
+                return true;
+            });
+            statusBar()->showMessage("Text edit cancelled", 2500);
+        } else if (accepted && cl && cl->title.text.trimmed().isEmpty()) {
+            // left empty: remove the text instead of keeping an invisible clip
+            m_doc.apply("Delete empty text", [&](Project &p) { return TimelineOps::deleteClips(p, {clipId}, false); });
+        } else if (*changed) {
+            statusBar()->showMessage("Text updated", 2500);
+        }
+    };
+    m_viewer->startTextEdit(original, f, c->title.color, live, done, anchor);
+}
+
+void MainWindow::addText()
+{
+    if (!m_doc.isOpen())
+        return;
+    m_engine->pause();
+    TitleProps tp;
+    tp.text = "Your text";
+    TextStyles::apply(tp, "clean-white");
+    tp.sizePct = 0.075;
+    tp.animation = "none"; // visible straight away while typing; animations are one click away
+    tp.animationOut = "none";
+    const TimeUs at = m_doc.playhead();
+    QString id;
+    m_doc.apply("Add text", [&](Project &p) {
+        id = TimelineOps::addTitleClip(p, {}, at, 4 * kUsPerSec, tp);
+        return !id.isEmpty();
+    });
+    if (id.isEmpty())
+        return;
+    m_doc.setSelectedClips({id});
+    if (m_stack->currentWidget() != m_viewer)
+        return;
+    // type right away, on the video (after the preview has drawn the new text)
+    QTimer::singleShot(80, this, [this, id]() { m_viewer->requestTitleEdit(id); });
 }
 
 void MainWindow::editCaptionInViewer(const QRect &anchor)

@@ -305,57 +305,76 @@ QString CanvasSettings::aspectLabel() const
     return QString::number(r, 'f', 2) + ":1";
 }
 
-MediaAsset *Project::findMedia(const QString &id)
+// The const finders only read, so a project that shares its data with an undo snapshot
+// (Qt implicit sharing) is never copied just by looking things up. The non-const finders
+// locate the item read-only first and then detach only the containers on its path.
+const MediaAsset *Project::findMedia(const QString &id) const
 {
-    for (auto &m : media)
+    for (const auto &m : media)
         if (m.id == id)
             return &m;
     return nullptr;
 }
-const MediaAsset *Project::findMedia(const QString &id) const
+MediaAsset *Project::findMedia(const QString &id)
 {
-    return const_cast<Project *>(this)->findMedia(id);
-}
-Track *Project::findTrack(const QString &id)
-{
-    for (auto &t : tracks)
-        if (t.id == id)
-            return &t;
+    for (int i = 0; i < media.size(); ++i)
+        if (std::as_const(media)[i].id == id)
+            return &media[i];
     return nullptr;
 }
 const Track *Project::findTrack(const QString &id) const
 {
-    return const_cast<Project *>(this)->findTrack(id);
+    for (const auto &t : tracks)
+        if (t.id == id)
+            return &t;
+    return nullptr;
 }
-Clip *Project::findClip(const QString &id, Track **track)
+Track *Project::findTrack(const QString &id)
 {
-    for (auto &t : tracks)
-        for (auto &c : t.clips)
+    for (int i = 0; i < tracks.size(); ++i)
+        if (std::as_const(tracks)[i].id == id)
+            return &tracks[i];
+    return nullptr;
+}
+const Clip *Project::findClip(const QString &id, const Track **track) const
+{
+    for (const auto &t : tracks)
+        for (const auto &c : t.clips)
             if (c.id == id) {
                 if (track)
                     *track = &t;
                 return &c;
             }
+    if (track)
+        *track = nullptr;
     return nullptr;
 }
-const Clip *Project::findClip(const QString &id, const Track **track) const
+Clip *Project::findClip(const QString &id, Track **track)
 {
-    Track *t = nullptr;
-    const Clip *c = const_cast<Project *>(this)->findClip(id, &t);
-    if (track)
-        *track = t;
-    return c;
-}
-Transcript *Project::findTranscript(const QString &id)
-{
-    for (auto &t : transcripts)
-        if (t.id == id)
-            return &t;
+    const auto &ct = std::as_const(tracks);
+    for (int ti = 0; ti < ct.size(); ++ti)
+        for (int ci = 0; ci < ct[ti].clips.size(); ++ci)
+            if (ct[ti].clips[ci].id == id) {
+                Track &t = tracks[ti];
+                if (track)
+                    *track = &t;
+                return &t.clips[ci];
+            }
     return nullptr;
 }
 const Transcript *Project::findTranscript(const QString &id) const
 {
-    return const_cast<Project *>(this)->findTranscript(id);
+    for (const auto &t : transcripts)
+        if (t.id == id)
+            return &t;
+    return nullptr;
+}
+Transcript *Project::findTranscript(const QString &id)
+{
+    for (int i = 0; i < transcripts.size(); ++i)
+        if (std::as_const(transcripts)[i].id == id)
+            return &transcripts[i];
+    return nullptr;
 }
 const Speaker *Project::findSpeaker(int id) const
 {
@@ -365,22 +384,58 @@ const Speaker *Project::findSpeaker(int id) const
     return nullptr;
 }
 
+QVector<QPair<int, int>> Project::linkedClipIndices(const QString &clipId) const
+{
+    QVector<QPair<int, int>> out;
+    const Clip *c = findClip(clipId);
+    if (!c)
+        return out;
+    const QString link = c->linkId;
+    for (int ti = 0; ti < tracks.size(); ++ti)
+        for (int ci = 0; ci < tracks[ti].clips.size(); ++ci) {
+            const Clip &cl = tracks[ti].clips[ci];
+            if (link.isEmpty() ? cl.id == clipId : cl.linkId == link)
+                out.append({ti, ci});
+        }
+    return out;
+}
+
 QVector<Clip *> Project::linkedClips(const QString &clipId)
 {
     QVector<Clip *> out;
-    Clip *c = findClip(clipId);
-    if (!c)
-        return out;
-    if (c->linkId.isEmpty()) {
-        out << c;
-        return out;
-    }
-    const QString link = c->linkId;
-    for (auto &t : tracks)
-        for (auto &cl : t.clips)
-            if (cl.linkId == link)
-                out << &cl;
+    for (const auto &[ti, ci] : linkedClipIndices(clipId))
+        out << &tracks[ti].clips[ci];
     return out;
+}
+
+QVector<const Clip *> Project::linkedClips(const QString &clipId) const
+{
+    QVector<const Clip *> out;
+    for (const auto &[ti, ci] : linkedClipIndices(clipId))
+        out << &tracks[ti].clips[ci];
+    return out;
+}
+
+QString TitleProps::displayText() const
+{
+    QString t = text;
+    t.remove('*');
+    if (textCase == "upper")
+        t = t.toUpper();
+    else if (textCase == "lower")
+        t = t.toLower();
+    else if (textCase == "title") {
+        bool start = true;
+        for (QChar &ch : t) {
+            if (ch.isLetter()) {
+                ch = start ? ch.toUpper() : ch.toLower();
+                start = false;
+            } else {
+                start = ch.isSpace() || ch == '-';
+            }
+        }
+    }
+    return t;
 }
 
 TimeUs Project::duration() const

@@ -7,12 +7,14 @@ An offline desktop video editor for Windows and macOS. Its flagship feature is *
 This repository implements the **P0 / MVP scope** of *Offline Desktop Video Editor — Enterprise Product and Technical Plan v1.0* in Qt 6 and C++. It covers the full P0 editor (multitrack timeline with trim, split and ripple, plus autosave and recovery) and the complete local subtitle pipeline.
 
 ## Creative features (all on your computer, no account or billing)
+- **Text**: one-click *Add Text* typed right on the video, a floating format bar (font, size, bold, italic, underline, case, alignment, colours) that changes only the selected text, **28 professional text styles**, 28 ready-made text layouts, and per-word colour with `*stars*`
+- **Captions** you can move one by one (or all together with Alt), with per-caption looks
 - **Keyframes** for position, scale, rotation and opacity with easing curves and one-click animation presets
 - **24 transitions** (dissolve, dips, flash, blur, slides, pushes, wipes, split, circle, zoom, spin, glitch)
 - **24 video effects** (blur, glow, dreamy, vignette, VHS, glitch, RGB split, film grain, old film, light leak, shake, zoom pulse, Ken Burns, strobe, mirror, kaleidoscope and more) on clips or as **effect layers**
 - **24 filters**, HSL-style adjustments (hue, vibrance, highlights, shadows, fade, vignette, grain, sharpen) and **.cube LUTs**
 - **Chroma key** (green/blue screen), **masks** (linear, mirror, circle, rectangle) with feather, **13 blend modes**, **blurred / colour canvas background**
-- **Text**: 18 templates, in/out/loop animations, gradient fill, shadows, letter spacing; **30 emoji stickers**; shapes (arrow, highlight box, star…)
+- **Text animations**: in/out/loop animations, gradient fill, shadows, letter spacing; **30 emoji stickers**; shapes (arrow, highlight box, star…)
 - **Speed**: constant speed, **speed curves** (montage, hero, bullet time…), **reverse**, **freeze frame**, **stabilise**
 - **Audio**: voice changers (chipmunk, deep, robot, echo, hall, telephone…), noise reduction, voice enhance, auto-ducking music, loudness normalisation, **beat markers**, extract audio, **text-to-speech** with the voices on your computer
 - **Smart cuts**: remove silences, remove filler words (um/uh) from the captions, split by scenes

@@ -106,6 +106,7 @@ QJsonObject Settings::toJson() const
     o["undoLimit"] = undoLimit;
     o["startInQuickMode"] = startInQuickMode;
     o["snapping"] = snapping;
+    o["captionDragAll"] = captionDragAll;
     o["ffmpegPath"] = ffmpegPath;
     o["ffprobePath"] = ffprobePath;
     o["whisperPath"] = whisperPath;
@@ -134,6 +135,7 @@ Settings Settings::fromJson(const QJsonObject &o)
     s.undoLimit = std::clamp(o.value("undoLimit").toInt(s.undoLimit), 10, 1000);
     s.startInQuickMode = o.value("startInQuickMode").toBool(s.startInQuickMode);
     s.snapping = o.value("snapping").toBool(s.snapping);
+    s.captionDragAll = o.value("captionDragAll").toBool(s.captionDragAll);
     s.ffmpegPath = o.value("ffmpegPath").toString();
     s.ffprobePath = o.value("ffprobePath").toString();
     s.whisperPath = o.value("whisperPath").toString();

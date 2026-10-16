@@ -3,6 +3,8 @@
 #include "../captions/OverlayRenderer.h"
 #include "../core/Model.h"
 
+#include <QHash>
+#include <QPointF>
 #include <QRectF>
 #include <QVector>
 
@@ -43,7 +45,12 @@ struct Grab {
     double size = 0;      // title sizePct, caption sizePct, media scale
     double scale = 1;     // transform scale (keyframed titles/shapes)
     TimeUs localT = 0;    // playhead relative to the clip start (keyframe editing)
+    // captions, "all captions" mode: start offsets/sizes of captions that have their own, so
+    // they move/resize together with the rest instead of staying behind
+    QHash<int, QPointF> cueOffsets;
+    QHash<int, double> cueSizes;
 };
+// perCue: captions only — true moves/resizes just this caption, false all captions on the track.
 Grab grab(const Project &p, const Item &item, bool perCue);
 
 // Moves the grabbed item by delta canvas pixels relative to where the drag started.
@@ -53,8 +60,11 @@ bool scale(Project &p, const Grab &g, double factor);
 // Sets a shape's box directly (canvas pixels).
 bool setShapeRect(Project &p, const Grab &g, const QRectF &rect);
 
-bool resetPosition(Project &p, const Item &item);
-bool resetSize(Project &p, const Item &item);
+// Captions: perCue resets only this caption, otherwise the whole track (and every caption's own value).
+bool resetPosition(Project &p, const Item &item, bool perCue = true);
+bool resetSize(Project &p, const Item &item, bool perCue = true);
+// Captions: make every caption on the track use this caption's position.
+bool applyCaptionPositionToAll(Project &p, const Item &item);
 
 } // namespace CanvasLayout
 } // namespace ss

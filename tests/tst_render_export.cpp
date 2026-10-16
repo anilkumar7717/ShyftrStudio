@@ -349,6 +349,112 @@ private slots:
         QCOMPARE(p.findClip(vid)->transform.scale, 1.0);
     }
 
+    void individualCaptionsMoveIndependently()
+    {
+        Project p = makeEmptyProject("Caps", CanvasSettings{1920, 1080, {30, 1}, 48000, Qt::black});
+        Transcript t;
+        t.id = "tr";
+        t.words = {W("One", 0, 900), W("two", 1000, 1900), W("three", 2000, 2900), W("four", 3000, 3900)};
+        t.cues = {{0, 0, -1, {}, false}, {1, 1, -1, {}, false}, {2, 2, -1, {}, false}, {3, 3, -1, {}, false}};
+        p.transcripts << t;
+        Track ct;
+        ct.id = "ct";
+        ct.kind = TrackKind::Caption;
+        ct.transcriptId = "tr";
+        ct.styleId = "minimal-clean";
+        p.tracks << ct;
+        auto capAt = [&](TimeUs ms) {
+            const auto items = CanvasLayout::itemsAt(p, OverlayScene::build(p), ms * kUsPerMs);
+            for (const auto &i : items)
+                if (i.kind == CanvasLayout::Item::Caption)
+                    return i;
+            return CanvasLayout::Item();
+        };
+        const QRectF r0 = capAt(500).rect, r1 = capAt(1500).rect, r2 = capAt(2500).rect;
+
+        // 1. move only caption #1: the others do not move, and it lands exactly where dragged
+        auto g = CanvasLayout::grab(p, capAt(1500), true);
+        QVERIFY(CanvasLayout::move(p, g, QPointF(-300, -200)));
+        QVERIFY(std::abs(capAt(1500).rect.left() - (r1.left() - 300)) < 1.5);
+        QVERIFY(std::abs(capAt(1500).rect.top() - (r1.top() - 200)) < 1.5);
+        QCOMPARE(capAt(500).rect, r0);
+        QCOMPARE(capAt(2500).rect, r2);
+        QVERIFY(p.findTrack("ct")->styleOverrides.isEmpty());
+
+        // 2. moving it again continues from where it is (no jump back)
+        g = CanvasLayout::grab(p, capAt(1500), true);
+        QVERIFY(CanvasLayout::move(p, g, QPointF(100, 0)));
+        QVERIFY(std::abs(capAt(1500).rect.left() - (r1.left() - 200)) < 1.5);
+
+        // 3. "all captions": everyone moves by the same amount, including the moved one
+        const QRectF moved1 = capAt(1500).rect;
+        g = CanvasLayout::grab(p, capAt(2500), false);
+        QVERIFY(CanvasLayout::move(p, g, QPointF(0, -100)));
+        QVERIFY(std::abs(capAt(500).rect.top() - (r0.top() - 100)) < 1.5);
+        QVERIFY(std::abs(capAt(2500).rect.top() - (r2.top() - 100)) < 1.5);
+        QVERIFY(std::abs(capAt(1500).rect.top() - (moved1.top() - 100)) < 1.5);
+
+        // 4. resizing one caption leaves the others alone; reset size for one only
+        const QRectF big0 = capAt(500).rect;
+        g = CanvasLayout::grab(p, capAt(2500), true);
+        QVERIFY(CanvasLayout::scale(p, g, 1.6));
+        QVERIFY(capAt(2500).rect.height() > big0.height() * 1.3);
+        QCOMPARE(capAt(500).rect, big0);
+        QVERIFY(CanvasLayout::resetSize(p, capAt(2500), true));
+        QVERIFY(std::abs(capAt(2500).rect.height() - big0.height()) < 1.5);
+
+        // 5. re-splitting the captions (e.g. 2 words per caption) keeps the moved one's position
+        TranscriptEdit::resegment(*p.findTranscript("tr"), TemplateLibrary::instance().get("minimal-clean").withOverrides(QJsonObject{{"maxWordsPerLine", 2}, {"maxLines", 1}}));
+        bool kept = false;
+        for (const Cue &c : p.findTranscript("tr")->cues)
+            kept = kept || (c.first <= 1 && c.last >= 1 && c.styleOverrides.contains("offsetXPct"));
+        QVERIFY(kept);
+
+        // 6. "put all captions at this position" and "reset all"
+        QVERIFY(CanvasLayout::applyCaptionPositionToAll(p, capAt(1500)));
+        for (const Cue &c : p.findTranscript("tr")->cues)
+            QVERIFY(!c.styleOverrides.contains("offsetXPct"));
+        QVERIFY(std::abs(capAt(2500).rect.left() - capAt(1500).rect.left()) < 200); // same anchor now
+        QVERIFY(CanvasLayout::resetPosition(p, capAt(500), false));
+        QVERIFY(!p.findTrack("ct")->styleOverrides.contains("offsetXPct"));
+    }
+
+    void activeWordCaptionHitBoxMatchesDrawing()
+    {
+        Project p = makeEmptyProject("Hit", CanvasSettings{1920, 1080, {30, 1}, 48000, Qt::black});
+        Transcript t;
+        t.id = "tr";
+        t.words = {W("A", 0, 500), W("muchlongerword", 500, 1000), W("end", 1000, 1500)};
+        t.cues = {{0, 2, -1, {}, true}};
+        p.transcripts << t;
+        Track ct;
+        ct.id = "ct";
+        ct.kind = TrackKind::Caption;
+        ct.transcriptId = "tr";
+        ct.styleId = "minimal-clean";
+        ct.styleOverrides = QJsonObject{{"wordEffect", "activeOnly"}};
+        p.tracks << ct;
+        const auto a = CanvasLayout::itemsAt(p, OverlayScene::build(p), 200 * kUsPerMs);
+        const auto b = CanvasLayout::itemsAt(p, OverlayScene::build(p), 700 * kUsPerMs);
+        QVERIFY(!a.isEmpty() && !b.isEmpty());
+        // one short word vs one long word: the grab box follows the word that is shown
+        QVERIFY(a[0].rect.width() * 3 < b[0].rect.width());
+        // and it matches the drawn pixels
+        QImage img(1920, 1080, QImage::Format_ARGB32_Premultiplied);
+        img.fill(Qt::black);
+        QPainter pa(&img);
+        OverlayScene::build(p).renderCaptions(pa, img.size(), 700 * kUsPerMs);
+        pa.end();
+        QRect ink;
+        for (int y = 0; y < img.height(); y += 2)
+            for (int x = 0; x < img.width(); x += 2)
+                if (qGray(img.pixel(x, y)) > 60)
+                    ink |= QRect(x, y, 1, 1);
+        QVERIFY(!ink.isNull());
+        QVERIFY(b[0].rect.adjusted(-20, -20, 20, 20).contains(QRectF(ink)));
+        QVERIFY(ink.width() > b[0].rect.width() * 0.6);
+    }
+
     void compositorMatchesFilterGraph()
     {
         const QString v = makeTestVideo(m_tmp.path(), "cmp.mp4", 2.0, 640, 360, "25");

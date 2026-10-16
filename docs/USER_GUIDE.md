@@ -20,6 +20,7 @@ Dockable **Media**, **Effects**, **Inspector**, **AI Subtitles** and **Timeline*
 - Drop an effect, filter, speed curve or voice effect **onto a clip** to apply it to that clip (it lights up); drop a transition **near a cut**. Dropped on empty space, effects and filters become an effect layer.
 - Drag a **track header** up or down to reorder tracks. Drag a **caption block** to retime it. While dragging near the edges the timeline scrolls; press **Esc** to cancel.
 - Drag clip edges to trim. Drag the small **dots at the top corners** to set fades.
+- **Room to work:** the timeline gets about a third of the window and keeps that share when you resize or maximise the window. Drag the divider above it to change the share, and your choice is remembered. On small screens the tracks switch to a compact size so they all stay visible, and the side panels scroll instead of squeezing the timeline.
 - Click the ruler to scrub. Use Ctrl/⌘+wheel to zoom and Shift+wheel to scroll horizontally.
 - Track buttons: **M** mute, **L** lock, **H** hide, **CC** burn captions into exports.
 - Right-click clips, tracks or empty space for more commands (speed, fades, unlink, rename, add title, and so on).
@@ -59,11 +60,21 @@ Everything above runs on this computer with FFmpeg and Qt. Heavy jobs (reverse, 
 Click anything on the video to select it: captions, titles, shapes or a video layer. A blue box with corner handles appears.
 - **Move:** drag it. Pink guide lines show when it snaps to the centre, the frame edges or the caption-safe area. Hold **Shift** to move in a straight line, or **Ctrl/⌘** to turn snapping off.
 - **Resize:** drag a corner handle. Shapes stretch freely (hold **Shift** to keep their proportions). Captions, titles and video scale evenly.
-- **Captions:** dragging moves every caption on that track. Hold **Alt/Option** while dragging to move only the caption you grabbed. Right-click → *Reset caption position* puts them back.
+- **Captions:** dragging a caption moves **only that caption**; everything else stays put. Hold **Alt/Option** while dragging to move **all** captions together (captions you placed on their own move along by the same amount). Prefer it the other way round? Right-click a caption → *Dragging a caption moves* → *All captions together*.
+  Right-click also offers *Reset this caption's position*, *Put all captions at this position*, *Reset all caption positions* and the same for size. A caption you placed keeps its spot when captions are re-split (e.g. after changing words per line).
 - **Video:** the main video usually fills the frame, so the first click only selects it. Drag after that to make picture-in-picture layouts.
 - **Add shapes and titles by dropping:** drag an item from *Effects → Shapes* or *Titles* onto the video to place it exactly where you drop it. The shapes include an arrow, highlight box, circle, star, pill tag and triangle.
 - **Edit text in place:** double-click a title or caption on the video.
 - **Right-click** for Reset position, Reset size or Delete. Every move and resize can be undone with ⌘Z.
+
+### Text
+- **Add text:** press **T**, click **T Add Text** in the toolbar, **+ Text** under the video, or **+ Add text** in Quick mode. The text appears at the playhead with an editor right on the video, so just type. **Enter** finishes, **Shift+Enter** starts a new line, **Esc** cancels. The video updates as you type, and the whole edit is one undo step. Double-click any text to edit it again.
+- **Colour single words:** put stars around them, e.g. `Hello *world*`. Starred words use the text's highlight colour (the stars aren't shown).
+- **Format bar:** when one text is selected, a bar appears above the video with Styles, font, size, **B**old, *I*talic, U̲nderline, letter case (Aa), alignment, text colour, highlight colour and ✎ (edit words). It only ever changes **that** text.
+- **Professional styles:** 28 looks in 6 groups: clean, bold, boxed/labels, glow/neon, elegant and fun. Pick one from the format bar's *Styles*, the Inspector's *Text styles* grid, or the Library's *Text styles* tab. You can also drag a style onto a text on the video, or onto empty space for a new styled text. A style changes only the look (font, colours, outline, shadow, box, glow, spacing, case). Your words, position, size and animation stay.
+- **Inspector → Text** has every setting too (font, weight, italic, underline, case, size, colours, outline, box, alignment, line spacing, highlight colour), plus glow, gradient, shadow, letter spacing and box shape under **Style**. If several texts are selected, a banner says so; click **Edit only this one** to change just one.
+- **Library → Text** has ready-made layouts, including a pro lower third, name tag, chapter title, quote card, breaking-news bar, YouTube title, neon and luxury titles, a subscribe button and a key-point highlight.
+- **One caption, its own look:** in *AI Subtitles → Style*, tick **Change only the selected caption**. Templates and every style setting (font, size, colours…) then change just the selected caption.
 
 ### Editing captions (three ways)
 1. **On the video:** double-click the caption in the viewer, type, then press **Enter** to save or **Esc** to cancel. Double-clicking a caption on the timeline does the same.
@@ -88,10 +99,11 @@ After generation, the *Edit captions* tab opens automatically, in Quick mode as 
 | ⌘C / ⌘X / ⌘V / ⌘D | Copy / cut / paste at playhead / duplicate | ⌘L | Link / unlink |
 | I / O / Alt+X | In / out / clear | ⇧⌘L | Loop in/out |
 | = / − / Shift+Z | Zoom in / out / fit | N | Snapping |
-| T / Shift+T | Title / lower third | ' | Caption-safe guides |
+| ' | Caption-safe guides | | |
 | ⌘I | Import | ⇧⌘R | Record voice-over |
 | ⇧⌘C | Generate captions | ⌘E | Export |
 | ⌘S | Save | ⌘Z / ⇧⌘Z | Undo / redo |
+| T | Add text (type on the video) | ⇧T | Lower third |
 | ⌘K | Add keyframe at playhead | ⇧F | Freeze frame |
 | M | Add marker | ⇧M / ⌥M | Previous / next marker |
 | ⇧⌘S | Snapshot (save frame as PNG) | | |

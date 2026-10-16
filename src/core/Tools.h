@@ -28,6 +28,11 @@ public:
 
     static QString ffmpegVersionString();
     static int ffmpegMajorVersion();
+    // True when FFmpeg takes "-/filter_complex <file>" (7.0+); older ones need -filter_complex_script.
+    static bool ffmpegUsesSlashOptions();
+    // The option that reads a filter graph from a file, tested on the actual binary (cached):
+    // "-/filter_complex" (FFmpeg 7+) or "-filter_complex_script" (older).
+    static QString ffmpegFilterScriptOption();
     static QStringList ffmpegEncoders(); // cached
     static bool hasEncoder(const QString &name);
     static bool encoderWorks(const QString &name); // probes once and caches

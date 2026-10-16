@@ -1,4 +1,8 @@
 #include "TestUtil.h"
+#include "captions/TextStyles.h"
+#include "captions/OverlayRenderer.h"
+#include "core/ProjectSerializer.h"
+#include <QPainter>
 
 #include "core/ProjectSerializer.h"
 #include "media/Compositor.h"
@@ -248,6 +252,133 @@ private slots:
             QVERIFY2(qAbs(qRed(end.pixel(80, 45)) - 255) < 20 && qAbs(qGreen(end.pixel(80, 45)) - 255) < 20, qPrintable(tr.id));
             QVERIFY2(qAbs(qRed(out.pixel(80, 45)) - qRed(base.pixel(80, 45))) < 30, qPrintable(tr.id));
         }
+    }
+
+    void textStylesChangeOnlyTheLook()
+    {
+        TitleProps tp;
+        tp.text = "Hello *world*";
+        tp.x = 0.3;
+        tp.y = 0.7;
+        tp.sizePct = 0.06;
+        tp.align = "left";
+        tp.animation = "pop";
+        QVERIFY(TextStyles::all().size() >= 24);
+        QSet<QString> ids;
+        for (const TextStyle &st : TextStyles::all()) {
+            QVERIFY2(!ids.contains(st.id), qPrintable(st.id));
+            ids.insert(st.id);
+            TitleProps t = tp;
+            QVERIFY(TextStyles::apply(t, st.id));
+            QCOMPARE(t.text, tp.text);
+            QCOMPARE(t.x, tp.x);
+            QCOMPARE(t.y, tp.y);
+            QCOMPARE(t.sizePct, tp.sizePct);
+            QCOMPARE(t.align, tp.align);
+            QCOMPARE(t.animation, tp.animation);
+            QCOMPARE(t.styleId, st.id);
+            // every style draws visible text
+            Clip c;
+            c.type = ClipType::Title;
+            c.out = 4 * kUsPerSec;
+            c.title = t;
+            c.title.animation = "none";
+            QImage img(640, 360, QImage::Format_ARGB32_Premultiplied);
+            img.fill(QColor(40, 40, 40));
+            QPainter pa(&img);
+            GraphicsRenderer::paintTitle(pa, img.size(), c, kUsPerSec);
+            pa.end();
+            int changed = 0;
+            for (int y = 0; y < 360; y += 3)
+                for (int x = 0; x < 640; x += 3)
+                    changed += img.pixel(x, y) != qRgb(40, 40, 40);
+            QVERIFY2(changed > 40, qPrintable(st.id));
+        }
+        // switching styles does not keep leftovers from the previous one (e.g. a box)
+        TitleProps t = tp;
+        TextStyles::apply(t, "box-dark");
+        QVERIFY(t.backgroundColor.alpha() > 0);
+        TextStyles::apply(t, "clean-white");
+        QCOMPARE(t.backgroundColor.alpha(), 0);
+        QVERIFY(!TextStyles::apply(t, "nope"));
+    }
+
+    void textFormattingRenders()
+    {
+        auto render = [](const TitleProps &tp) {
+            Clip c;
+            c.type = ClipType::Title;
+            c.out = 4 * kUsPerSec;
+            c.title = tp;
+            c.title.animation = "none";
+            QImage img(640, 360, QImage::Format_ARGB32_Premultiplied);
+            img.fill(Qt::black);
+            QPainter pa(&img);
+            GraphicsRenderer::paintTitle(pa, img.size(), c, kUsPerSec);
+            return img;
+        };
+        TitleProps tp;
+        tp.text = "plain *GOLD*";
+        tp.color = Qt::white;
+        tp.highlightColor = QColor(255, 200, 0);
+        tp.shadowColor = QColor(0, 0, 0, 0);
+        const QImage a = render(tp);
+        int yellow = 0, white = 0;
+        for (int y = 0; y < 360; ++y)
+            for (int x = 0; x < 640; ++x) {
+                const QColor c = a.pixelColor(x, y);
+                yellow += c.red() > 200 && c.green() > 150 && c.blue() < 60;
+                white += c.red() > 200 && c.green() > 200 && c.blue() > 200;
+            }
+        QVERIFY(yellow > 200); // *GOLD* in the highlight colour
+        QVERIFY(white > 200);  // the rest in the text colour
+        // stars are not drawn: same width as the text without them
+        Clip c1, c2;
+        c1.type = c2.type = ClipType::Title;
+        c1.title = tp;
+        c2.title = tp;
+        c2.title.text = "plain GOLD";
+        QVERIFY(std::abs(GraphicsRenderer::titleRect(QSize(640, 360), c1).width() - GraphicsRenderer::titleRect(QSize(640, 360), c2).width()) < 1);
+        // letter case
+        TitleProps up = tp;
+        up.text = "make me big";
+        up.textCase = "upper";
+        QCOMPARE(up.displayText(), QString("MAKE ME BIG"));
+        up.textCase = "title";
+        QCOMPARE(up.displayText(), QString("Make Me Big"));
+        // line spacing makes a two-line block taller
+        Clip l1, l2;
+        l1.type = l2.type = ClipType::Title;
+        l1.title.text = l2.title.text = "one\ntwo";
+        l2.title.lineSpacing = 1.8;
+        QVERIFY(GraphicsRenderer::titleRect(QSize(640, 360), l2).height() > GraphicsRenderer::titleRect(QSize(640, 360), l1).height() * 1.4);
+        // underline draws below the text
+        TitleProps u;
+        u.text = "under";
+        u.shadowColor = QColor(0, 0, 0, 0);
+        const QImage noU = render(u);
+        u.underline = true;
+        const QImage withU = render(u);
+        QVERIFY(noU != withU);
+        // formatting survives save/load
+        Project p = makeEmptyProject("T", CanvasSettings());
+        TitleProps f = tp;
+        f.underline = true;
+        f.textCase = "upper";
+        f.lineSpacing = 1.4;
+        f.glowColor = QColor("#22D3EE");
+        f.styleId = "neon-cyan";
+        const QString id = TimelineOps::addTitleClip(p, {}, 0, kUsPerSec, f);
+        Project q;
+        QString err;
+        QVERIFY(ProjectSerializer::fromBytes(ProjectSerializer::toBytes(p), q, &err));
+        const TitleProps &g = q.findClip(id)->title;
+        QVERIFY(g.underline);
+        QCOMPARE(g.textCase, QString("upper"));
+        QCOMPARE(g.lineSpacing, 1.4);
+        QCOMPARE(g.glowColor, QColor("#22D3EE"));
+        QCOMPARE(g.highlightColor, tp.highlightColor);
+        QCOMPARE(g.styleId, QString("neon-cyan"));
     }
 
     void looksAndAdjustRun()

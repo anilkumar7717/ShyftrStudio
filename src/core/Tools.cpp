@@ -10,6 +10,8 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <QTemporaryFile>
+#include <QDir>
 
 namespace ss {
 
@@ -86,13 +88,79 @@ QString Tools::ffmpegVersionString()
 
 int Tools::ffmpegMajorVersion()
 {
-    static int cached = -2;
-    if (cached != -2)
+    // Cached per FFmpeg path; a failed probe is not cached, so it is retried next time.
+    static QMutex mutex;
+    static QString cachedFor;
+    static int cached = 0;
+    QMutexLocker lock(&mutex);
+    const QString exe = ffmpeg();
+    if (exe.isEmpty())
+        return 0;
+    if (cachedFor == exe && cached > 0)
         return cached;
     const QString v = ffmpegVersionString();
-    QRegularExpression re(R"(version\s+n?(\d+))");
-    const auto m = re.match(v);
-    cached = m.hasMatch() ? m.captured(1).toInt() : 0;
+    if (v.isEmpty())
+        return 0;
+    int major = 0;
+    // "ffmpeg version 6.1.1-3ubuntu5", "ffmpeg version n9.0.2-27-g7e93…" (release builds)
+    const auto m = QRegularExpression(R"(version\s+n?(\d+)\.)").match(v);
+    if (m.hasMatch())
+        major = m.captured(1).toInt();
+    // Git snapshots ("ffmpeg version N-121234-gabc…", "…-git-2026…") carry no number, and some
+    // distributions use odd strings. Decide by what the binary actually supports: the old
+    // -filter_complex_script option was removed after 7.x, the new "-/option file" form exists since 7.0.
+    if (major <= 0 || major >= 90) {
+        const auto help = run(exe, {"-hide_banner", "-h", "full"}, 20000);
+        if (!help.started || help.out.isEmpty())
+            return 0;
+        const bool oldScriptOption = help.out.contains("filter_complex_script");
+        major = oldScriptOption ? 6 : 99;
+    }
+    cachedFor = exe;
+    cached = major;
+    return cached;
+}
+
+bool Tools::ffmpegUsesSlashOptions()
+{
+    // "-/filter_complex file" (FFmpeg 7+) instead of "-filter_complex_script file" (removed in 8)
+    return ffmpegFilterScriptOption() == "-/filter_complex";
+}
+
+QString Tools::ffmpegFilterScriptOption()
+{
+    static QMutex mutex;
+    static QString cachedFor, cached;
+    QMutexLocker lock(&mutex);
+    const QString exe = ffmpeg();
+    if (exe.isEmpty())
+        return "-/filter_complex";
+    if (cachedFor == exe && !cached.isEmpty())
+        return cached;
+    // Ask the real binary: run a one-frame job with each spelling, the predicted one first.
+    QTemporaryFile script(QDir::tempPath() + "/shyftr-probe-XXXXXX.txt");
+    QString found;
+    if (script.open()) {
+        script.write("[0:v]null[out]");
+        script.flush();
+        QStringList order{"-/filter_complex", "-filter_complex_script"};
+        if (ffmpegMajorVersion() > 0 && ffmpegMajorVersion() < 7)
+            std::swap(order[0], order[1]);
+        for (const QString &opt : order) {
+            const auto r = run(exe, {"-hide_banner", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i",
+                                     "color=black:s=16x16:d=0.04", opt, script.fileName(), "-map", "[out]",
+                                     "-frames:v", "1", "-f", "null", "-"},
+                               20000);
+            if (r.started && r.exitCode == 0) {
+                found = opt;
+                break;
+            }
+        }
+    }
+    if (found.isEmpty()) // could not tell (probe failed for another reason): go by the version
+        return ffmpegMajorVersion() >= 7 || ffmpegMajorVersion() == 0 ? "-/filter_complex" : "-filter_complex_script";
+    cachedFor = exe;
+    cached = found;
     return cached;
 }
 

@@ -175,6 +175,19 @@ QVector<Cue> Segmenter::segment(const QVector<Word> &words, const SegmentParams 
         if (!c.manual && carried.contains(c.first)) {
             c.speaker = carried[c.first].speaker;
             c.styleOverrides = carried[c.first].styleOverrides;
+            // A caption that was positioned on its own keeps that position even when the new
+            // split merges it with words from a neighbour that was not moved.
+            if (!c.styleOverrides.contains("offsetXPct") && !c.styleOverrides.contains("offsetYPct"))
+                for (int w = c.first + 1; w <= c.last; ++w)
+                    if (carried.contains(w)) {
+                        const QJsonObject &o = carried[w].styleOverrides;
+                        if (o.contains("offsetXPct") || o.contains("offsetYPct")) {
+                            for (const char *k : {"offsetXPct", "offsetYPct"})
+                                if (o.contains(k))
+                                    c.styleOverrides[k] = o.value(k);
+                            break;
+                        }
+                    }
         }
     std::sort(out.begin(), out.end(), [](const Cue &a, const Cue &b) { return a.first < b.first; });
     return out;

@@ -48,8 +48,11 @@ signals:
 
 protected:
     void resizeEvent(QResizeEvent *e) override;
+    void showEvent(QShowEvent *e) override;
 
 private:
+    bool m_refreshPending = false;
+    bool perCaptionMode() const; // style edits go to the selected caption only
     void buildGenerateTab(QWidget *tab);
     void buildEditTab(QWidget *tab);
     void buildStyleTab(QWidget *tab);

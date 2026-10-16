@@ -39,6 +39,7 @@ protected:
 
 private:
     void rebuild();
+    static void fitNarrow(QWidget *root);
     void refreshValues();
     QWidget *page(const QString &title);
     QGroupBox *section(const QString &title, QFormLayout **form);
