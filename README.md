@@ -50,7 +50,7 @@ open "build/Shyftr Studio.app"
 
 After step 4 everything (editing, transcription and export) works with Wi-Fi turned off.
 
-Windows: see `scripts/build-windows.ps1` and [docs/BUILD.md](docs/BUILD.md).
+Installable packages are built on GitHub: **macos-dmg** makes `ShyftrStudio-macos-arm64.dmg` and **windows-exe** makes the Windows installer, both with FFmpeg, whisper and a speech model inside. See [docs/BUILD.md](docs/BUILD.md).
 
 ---
 

@@ -20,6 +20,15 @@ The app finds Homebrew's `ffmpeg`, `ffprobe` and `whisper-cli` in `/opt/homebrew
 
 Homebrew's whisper.cpp is built with Metal, so transcription uses the Apple GPU unless *Preferences → Performance → Use GPU* is off.
 
+### Make the .dmg (let GitHub build it)
+The workflow `.github/workflows/macos.yml` (**macos-dmg**) runs on GitHub's Apple Silicon Macs and produces `ShyftrStudio-macos-arm64.dmg`: open it and drag Shyftr Studio onto Applications. Like the Windows build it is fully self-contained: Qt frameworks, a static FFmpeg + ffprobe, `whisper-cli` built from source with Metal, the speech model(s) and the voice-activity model are all inside the app (`Contents/Resources/bin` and `Contents/Resources/models`). The run checks that nothing links to Homebrew or other files users won't have, that FFmpeg encodes and whisper transcribes a sample, and that the app installed from the .dmg starts.
+
+Download it from GitHub → **Actions** → the latest **macos-dmg** run → **Artifacts** → *ShyftrStudio-macos*. **Run workflow** lets you choose the models (`small` by default); version tags (`v0.1.0`) attach the .dmg to the GitHub Release. It is Apple Silicon only (macOS 14+).
+
+Locally (after building): `bash scripts/macos/fetch-deps.sh && bash scripts/macos/package.sh --qt-dir ~/Qt/6.8.3/macos`.
+
+**Signing.** Without an Apple Developer ID the app is signed ad hoc: it works, but the first time a user opens it macOS refuses until they click **Open Anyway** in System Settings → Privacy & Security (a note in the .dmg explains this). To ship it without that step, add these repository secrets (Settings → Secrets and variables → Actions): `MACOS_CERTIFICATE` (base64 of the "Developer ID Application" .p12), `MACOS_CERTIFICATE_PASSWORD`, and for notarization `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` (an app-specific password). The workflow then signs with the hardened runtime and notarizes and staples both the app and the .dmg.
+
 ## Windows 10/11 (x64): make the .exe
 The result is fully self-contained: Qt, FFmpeg + ffprobe, whisper-cli, the speech model(s), the voice-activity model and the Microsoft C++ runtime are all bundled, so the person installing it needs nothing else. Text-to-speech uses the voices built into Windows.
 
